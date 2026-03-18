@@ -1,0 +1,18 @@
+{
+  "obsidianVaultPath": "/path/to/your/Obsidian_vault",
+  "inputPath": "1. INPUT",
+  "pollIntervals": {
+    "kakao": 5,
+    "gmail": 5,
+    "gcal": 15,
+    "slack": 5
+  },
+  "excludeChats": [],
+  "watchChats": [],
+  "summarizeHour": 23,
+  "morningBriefHour": 8,
+  "telegram": {
+    "botToken": "YOUR_BOT_TOKEN",
+    "ownerId": 0
+  }
+}
