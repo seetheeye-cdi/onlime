@@ -1,0 +1,27 @@
+{
+  "name": "최동인",
+  "title": "참치상사 대표",
+  "class": "CEO",
+  "level": 2,
+  "xp": 85,
+  "xpToNext": 15,
+  "guilds": [
+    "참치상사",
+    "에이아이당",
+    "더해커톤",
+    "넥스트노벨",
+    "자기계발"
+  ],
+  "stats": {
+    "leadership": 5,
+    "networking": 5,
+    "execution": 5,
+    "vision": 5,
+    "creativity": 5
+  },
+  "titles": [
+    "신입 모험가"
+  ],
+  "completedQuests": 10,
+  "streak": 0
+}

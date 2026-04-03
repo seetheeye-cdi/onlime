@@ -1,0 +1,8 @@
+
+# 녹음: {{ title }}
+
+- 일시: {{ rec_time }}
+{% if duration_minutes is not none %}- 길이: {{ duration_minutes }}분
+{% endif %}- 포맷: {{ extension }}
+- 크기: {{ file_size }}
+- 파일: `{{ file_path }}`

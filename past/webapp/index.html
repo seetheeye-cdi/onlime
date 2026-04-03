@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Obsidian World</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="rpg">RPG Quest</button>
+    <button class="tab-btn" data-tab="graph">3D Knowledge Graph</button>
+    <span class="tab-title">OBSIDIAN WORLD</span>
+  </nav>
+
+  <!-- RPG Tab -->
+  <div id="tab-rpg" class="tab-content active">
+    <div id="rpg-container">
+      <!-- Player Panel (Left) -->
+      <div id="player-panel"></div>
+
+      <!-- Game World (Center) -->
+      <div id="game-world"></div>
+
+      <!-- Quest Panel (Right) -->
+      <div id="quest-panel">
+        <div class="quest-panel-header">
+          <span>&#x1F4DC;</span> Quest Board
+        </div>
+        <div class="quest-tabs">
+          <button class="quest-tab active" data-tab="active">Active</button>
+          <button class="quest-tab" data-tab="epic">Epic</button>
+          <button class="quest-tab" data-tab="completed">Completed</button>
+        </div>
+        <div class="quest-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3D Graph Tab -->
+  <div id="tab-graph" class="tab-content">
+    <div id="graph-container">
+      <div id="graph-controls">
+        <input id="graph-search" type="text" placeholder="&#x1F50D; Search nodes...">
+        <div id="graph-filters"></div>
+      </div>
+      <div id="graph-info"></div>
+      <div id="node-panel"></div>
+    </div>
+  </div>
+
+  <!-- RPG Dialog Overlay -->
+  <div id="dialog-overlay">
+    <div id="dialog-box">
+      <div id="dialog-npc-portrait"></div>
+      <div id="dialog-npc-name"></div>
+      <div id="dialog-npc-affiliation"></div>
+      <div id="dialog-text"></div>
+      <div id="dialog-quest-info"></div>
+      <div id="dialog-actions"></div>
+    </div>
+  </div>
+
+  <!-- Level Up Overlay -->
+  <div id="levelup-overlay"></div>
+
+  <!-- Three.js (CDN) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+  <!-- App Scripts -->
+  <script src="js/data.js"></script>
+  <script src="js/graph3d.js"></script>
+  <script src="js/rpg.js"></script>
+
+  <script>
+    // === APP INIT ===
+    let graphInitialized = false;
+
+    async function initApp() {
+      try {
+        const data = await DataManager.loadAll();
+
+        // Init RPG immediately (default tab)
+        RPG.init(data.player, data.npcs, data.quests);
+
+        // Quest tab switching
+        document.querySelectorAll('.quest-tab').forEach(tab => {
+          tab.addEventListener('click', () => {
+            document.querySelectorAll('.quest-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            RPG.renderQuestPanel();
+          });
+        });
+
+        // Close dialog on overlay click
+        document.getElementById('dialog-overlay').addEventListener('click', (e) => {
+          if (e.target === e.currentTarget) RPG.closeDialog();
+        });
+
+        // Close dialog on Escape
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') {
+            RPG.closeDialog();
+            document.getElementById('levelup-overlay').classList.remove('visible');
+          }
+        });
+
+      } catch (err) {
+        console.error('Failed to load data:', err);
+        document.body.innerHTML = `
+          <div style="padding:40px;text-align:center;color:#ff6b6b;">
+            <h2>Data Load Error</h2>
+            <p>${err.message}</p>
+            <p style="color:#888;margin-top:16px;">
+              Run <code>python3 extract_vault.py && python3 extract_quests.py</code> first.
+            </p>
+          </div>
+        `;
+      }
+    }
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.getElementById(`tab-${tab}`).classList.add('active');
+
+        // Lazy-init 3D graph
+        if (tab === 'graph' && !graphInitialized && DataManager.graph) {
+          graphInitialized = true;
+          setTimeout(() => {
+            Graph3D.init(
+              document.getElementById('graph-container'),
+              DataManager.graph
+            );
+          }, 100);
+        }
+      });
+    });
+
+    // Start
+    initApp();
+  </script>
+
+</body>
+</html>

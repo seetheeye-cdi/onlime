@@ -1,0 +1,6 @@
+#### 오늘의 일정
+{% if not all_day_events and not timed_events %}- (일정 없음)
+{% endif %}{% for evt in all_day_events %}- (종일) {{ evt.title }}
+{% endfor %}{% for evt in timed_events %}- {{ evt.start_time }}~{{ evt.end_time }} [[{{ evt.meeting_note }}|{{ evt.title }}]]{% if evt.location %} @ {{ evt.location }}{% endif %}
+
+{% endfor %}

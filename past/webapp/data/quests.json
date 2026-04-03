@@ -1,0 +1,498 @@
+{
+  "active": [
+    {
+      "id": "ba622b2464df",
+      "title": "민심맨 계약서 작성",
+      "rawText": "민심맨 계약서 작성",
+      "guild": "참치상사",
+      "guildInfo": {
+        "icon": "fish",
+        "color": "#FF6B6B",
+        "type": "company"
+      },
+      "difficulty": "A",
+      "xp": 50,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "김석기"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "5e4089fc7fbe",
+      "title": "AI 개발자 채용 진행",
+      "rawText": "AI 개발자 채용 진행",
+      "guild": "에이아이당",
+      "guildInfo": {
+        "icon": "robot",
+        "color": "#339AF0",
+        "type": "party"
+      },
+      "difficulty": "A",
+      "xp": 50,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "양승현"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "9bea70f00d5f",
+      "title": "창당준비위원회 구성",
+      "rawText": "창당준비위원회 구성",
+      "guild": "에이아이당",
+      "guildInfo": {
+        "icon": "robot",
+        "color": "#339AF0",
+        "type": "party"
+      },
+      "difficulty": "S",
+      "xp": 100,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "양승현"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "c5c7d5e1aa74",
+      "title": "에이아이당_기능 ↔ AI 민원 혁신 벤치마킹 연결 검토",
+      "rawText": "[[에이아이당_기능]] ↔ [[AI 민원 혁신 벤치마킹]] 연결 검토",
+      "guild": "에이아이당",
+      "guildInfo": {
+        "icon": "robot",
+        "color": "#339AF0",
+        "type": "party"
+      },
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "양승현"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "72eeb7e9591c",
+      "title": "블랙미러_왈도의 전성시대 The Waldo Moment 참고해서 리스크 정리",
+      "rawText": "[[블랙미러_왈도의 전성시대 The Waldo Moment]] 참고해서 리스크 정리",
+      "guild": "에이아이당",
+      "guildInfo": {
+        "icon": "robot",
+        "color": "#339AF0",
+        "type": "party"
+      },
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "양승현"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "b0fcfa63b32f",
+      "title": "더해커톤 THEHACKATHON 인플루언서 시딩 컨텐츠",
+      "rawText": "[[더해커톤 THEHACKATHON]] 인플루언서 시딩 컨텐츠",
+      "guild": "더해커톤",
+      "guildInfo": {
+        "icon": "trophy",
+        "color": "#51CF66",
+        "type": "event"
+      },
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "조용민"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "f8d98781e45c",
+      "title": "조용민 언바운드랩 : a16z 키노트 확인",
+      "rawText": "조용민 언바운드랩 : a16z 키노트 확인",
+      "guild": "더해커톤",
+      "guildInfo": {
+        "icon": "trophy",
+        "color": "#51CF66",
+        "type": "event"
+      },
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "조용민"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "53f01843100d",
+      "title": "더해커톤 THEHACKATHON_캔디드",
+      "rawText": "[[더해커톤 THEHACKATHON_캔디드]]",
+      "guild": "더해커톤",
+      "guildInfo": {
+        "icon": "trophy",
+        "color": "#51CF66",
+        "type": "event"
+      },
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "조용민"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "b02f81251abb",
+      "title": "철학 공부 - 리히트 책방 만나 선악의 저편_강독 계속",
+      "rawText": "[[철학]] 공부 - [[리히트 책방]] 만나 [[선악의 저편_강독]] 계속",
+      "guild": "자기계발",
+      "guildInfo": {
+        "icon": "star",
+        "color": "#FFD43B",
+        "type": "personal"
+      },
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "0417c9aea65d",
+      "title": "독서모임 시작하기",
+      "rawText": "[[독서모임]] 시작하기",
+      "guild": "자기계발",
+      "guildInfo": {
+        "icon": "star",
+        "color": "#FFD43B",
+        "type": "personal"
+      },
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "52aaf36159b5",
+      "title": "넥스트노벨 NEXTNOBEL.org 단체 등록 접수",
+      "rawText": "[[넥스트노벨 NEXTNOBEL.org]] 단체 등록 접수",
+      "guild": "넥스트노벨",
+      "guildInfo": {
+        "icon": "book",
+        "color": "#CC5DE8",
+        "type": "org"
+      },
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "원준환"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "4f4417698b7a",
+      "title": "다음 참가자 섭외 (원준환_한성 4기) / 우수한_한성",
+      "rawText": "다음 참가자 섭외 ([[원준환_한성 4기]]) / [[우수한_한성]]",
+      "guild": "넥스트노벨",
+      "guildInfo": {
+        "icon": "book",
+        "color": "#CC5DE8",
+        "type": "org"
+      },
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "sourceFile": "1. THINK/매일/2026-03-16.md",
+      "date": "2026-03-16",
+      "npcIds": [
+        "원준환"
+      ],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "41c7bafc8364",
+      "title": "조용민 언바운드랩",
+      "rawText": "조용민 언바운드랩",
+      "guild": null,
+      "guildInfo": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "sourceFile": "1. THINK/매일/2026-03-11.md",
+      "date": "2026-03-11",
+      "npcIds": [],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "701e0e1a03e6",
+      "title": "넥스트노벨 NEXTNOBEL.org",
+      "rawText": "[[넥스트노벨 NEXTNOBEL.org]]",
+      "guild": null,
+      "guildInfo": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "sourceFile": "1. THINK/매일/2026-03-11.md",
+      "date": "2026-03-11",
+      "npcIds": [],
+      "completed": false,
+      "type": "daily"
+    },
+    {
+      "id": "cb153e5d9da1",
+      "title": "접수",
+      "rawText": "접수",
+      "guild": null,
+      "guildInfo": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "sourceFile": "1. THINK/매일/2026-03-11.md",
+      "date": "2026-03-11",
+      "npcIds": [],
+      "completed": false,
+      "type": "daily"
+    }
+  ],
+  "completed": [
+    {
+      "id": "42269963b88a",
+      "title": "김석기 - 참치_사업소개서_ver.26.03.16. 제작 전달",
+      "guild": "참치상사",
+      "difficulty": "A",
+      "xp": 50,
+      "source": "daily:2026-03-16",
+      "date": "2026-03-16",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "26420cf20794",
+      "title": "참치_민심맨 김소희 의원실 미팅 후속",
+      "guild": "참치상사",
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-16",
+      "date": "2026-03-16",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "db7114282bee",
+      "title": "보원이 형님",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "9eb6f6c23e65",
+      "title": "에이아이당_기능 구현하기",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "0ecdf8766735",
+      "title": "참치_민심맨 김소희 의원실",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "4a18e5e19875",
+      "title": "답장하기",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "96a0df6ed66e",
+      "title": "미팅 일정 잡기",
+      "guild": null,
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "e34cd4dd5b7b",
+      "title": "더해커톤 THEHACKATHON",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "bb01f19b0ef9",
+      "title": "이보영_워크모어 연락",
+      "guild": null,
+      "difficulty": "C",
+      "xp": 10,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    },
+    {
+      "id": "bd695672b7ce",
+      "title": "부동산 임대 계약 작성",
+      "guild": null,
+      "difficulty": "B",
+      "xp": 25,
+      "source": "daily:2026-03-11",
+      "date": "2026-03-11",
+      "completed": true,
+      "type": "daily"
+    }
+  ],
+  "epics": [
+    {
+      "id": "epic_chamchi_minsim",
+      "title": "민심맨 프로젝트 완성",
+      "description": "AI 기반 정치 여론 분석 시스템 '민심맨'을 완성하고 전국 의원실에 보급한다",
+      "guild": "참치상사",
+      "difficulty": "S",
+      "xp": 500,
+      "type": "epic",
+      "subQuests": [
+        "민심맨 계약서 작성",
+        "민심맨 고도화",
+        "의원실 파일럿"
+      ],
+      "progress": 0
+    },
+    {
+      "id": "epic_ai_party",
+      "title": "에이아이당 창당",
+      "description": "대한민국 최초의 AI 정당을 창당하고 AI 대전환 시대의 비전을 제시한다",
+      "guild": "에이아이당",
+      "difficulty": "S",
+      "xp": 1000,
+      "type": "epic",
+      "subQuests": [
+        "창당준비위원회 구성",
+        "AI 개발자 채용",
+        "당원 100명 모집"
+      ],
+      "progress": 0
+    },
+    {
+      "id": "epic_hackathon",
+      "title": "더해커톤 런칭",
+      "description": "해커톤 플랫폼을 런칭하고 첫 번째 해커톤을 성공적으로 개최한다",
+      "guild": "더해커톤",
+      "difficulty": "A",
+      "xp": 300,
+      "type": "epic",
+      "subQuests": [
+        "인플루언서 시딩",
+        "캔디드 연동",
+        "첫 해커톤 개최"
+      ],
+      "progress": 0
+    },
+    {
+      "id": "epic_nextnobel",
+      "title": "넥스트노벨 설립",
+      "description": "넥스트노벨 단체를 공식 등록하고 첫 프로그램을 운영한다",
+      "guild": "넥스트노벨",
+      "difficulty": "A",
+      "xp": 300,
+      "type": "epic",
+      "subQuests": [
+        "단체 등록 접수",
+        "참가자 섭외",
+        "첫 모임 개최"
+      ],
+      "progress": 0
+    }
+  ],
+  "guilds": {
+    "참치상사": {
+      "icon": "fish",
+      "color": "#FF6B6B",
+      "type": "company"
+    },
+    "에이아이당": {
+      "icon": "robot",
+      "color": "#339AF0",
+      "type": "party"
+    },
+    "더해커톤": {
+      "icon": "trophy",
+      "color": "#51CF66",
+      "type": "event"
+    },
+    "넥스트노벨": {
+      "icon": "book",
+      "color": "#CC5DE8",
+      "type": "org"
+    },
+    "자기계발": {
+      "icon": "star",
+      "color": "#FFD43B",
+      "type": "personal"
+    }
+  }
+}

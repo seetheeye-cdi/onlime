@@ -1,0 +1,766 @@
+/* === OBSIDIAN WORLD RPG - Dark Theme === */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&family=Press+Start+2P&display=swap');
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-card: #1a1a2e;
+  --bg-card-hover: #22223a;
+  --text-primary: #e8e8f0;
+  --text-secondary: #8888aa;
+  --text-muted: #555570;
+  --accent: #7c5cfc;
+  --accent-glow: rgba(124, 92, 252, 0.3);
+  --gold: #ffd700;
+  --xp-bar: #51cf66;
+  --hp-bar: #ff6b6b;
+  --border: #2a2a3e;
+  --quest-S: #ff4444;
+  --quest-A: #ff8844;
+  --quest-B: #44aaff;
+  --quest-C: #66cc66;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Noto Sans KR', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* === TAB NAVIGATION === */
+.tab-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  z-index: 1000;
+  gap: 4px;
+}
+
+.tab-btn {
+  padding: 8px 20px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover { color: var(--text-primary); background: var(--bg-card); }
+.tab-btn.active {
+  color: var(--accent);
+  background: var(--bg-card);
+  border-bottom: 2px solid var(--accent);
+}
+
+.tab-title {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'Press Start 2P', monospace;
+  letter-spacing: 1px;
+}
+
+/* === TAB CONTENT === */
+.tab-content {
+  display: none;
+  position: fixed;
+  top: 48px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.tab-content.active { display: block; }
+
+/* === 3D GRAPH === */
+#graph-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+#graph-canvas { width: 100%; height: 100%; }
+
+#graph-controls {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+#graph-search {
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  width: 280px;
+  outline: none;
+  font-family: inherit;
+}
+
+#graph-search:focus { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+#graph-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 280px;
+}
+
+.filter-chip {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-chip.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+#graph-info {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  z-index: 10;
+}
+
+#node-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 300px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: none;
+  z-index: 10;
+}
+
+#node-panel.visible { display: block; }
+
+#node-panel h3 {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+#node-panel .node-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+#node-panel .node-links {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+#node-panel .node-link {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 2px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+#node-panel .node-link:hover { background: var(--accent); color: white; }
+
+/* === RPG GAME === */
+#rpg-container {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 280px 1fr 320px;
+  grid-template-rows: 1fr;
+  gap: 0;
+}
+
+/* Player Panel (Left) */
+#player-panel {
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.player-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #4a3aaf);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  margin: 0 auto 12px;
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.player-name {
+  text-align: center;
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.player-title {
+  text-align: center;
+  font-size: 12px;
+  color: var(--gold);
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+
+.player-class {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+/* XP Bar */
+.xp-section {
+  margin-bottom: 20px;
+}
+
+.xp-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.xp-bar-bg {
+  height: 12px;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.xp-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--xp-bar), #2ecc71);
+  border-radius: 6px;
+  transition: width 0.5s ease;
+}
+
+.level-badge {
+  display: inline-block;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 10px;
+  color: var(--gold);
+}
+
+/* Stats */
+.stats-section { margin-bottom: 20px; }
+.stats-section h4 {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.stat-name { width: 80px; color: var(--text-secondary); }
+.stat-bar-bg {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.stat-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.stat-val { width: 24px; text-align: right; color: var(--text-muted); font-size: 10px; }
+
+/* Guild List */
+.guild-section { margin-bottom: 20px; }
+.guild-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.guild-item:hover { background: var(--bg-card); }
+
+.guild-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.guild-name { font-size: 13px; flex: 1; }
+.guild-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Game World (Center) */
+#game-world {
+  position: relative;
+  overflow: hidden;
+  background: #E8E0D4;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* NPC sprites (CSS rendered) */
+.npc-sprite {
+  position: absolute;
+  cursor: pointer;
+  transition: transform 0.2s;
+  text-align: center;
+}
+
+.npc-sprite:hover { transform: scale(1.15); }
+
+.npc-body {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin: 0 auto;
+  position: relative;
+  border: 2px solid rgba(255,255,255,0.2);
+}
+
+.npc-quest-mark {
+  position: absolute;
+  top: -12px;
+  right: -4px;
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--gold);
+  animation: bounce 1s infinite;
+  text-shadow: 0 0 8px rgba(255,215,0,0.6);
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.npc-name {
+  font-size: 10px;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
+
+.npc-affiliation {
+  font-size: 8px;
+  color: var(--text-muted);
+}
+
+/* Quest Panel (Right) */
+#quest-panel {
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.quest-panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quest-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.quest-tab {
+  flex: 1;
+  padding: 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.quest-tab.active {
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+
+.quest-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.quest-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.quest-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.quest-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.quest-difficulty {
+  font-size: 10px;
+  font-weight: 900;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Press Start 2P', monospace;
+}
+
+.quest-difficulty.S { background: var(--quest-S); color: white; }
+.quest-difficulty.A { background: var(--quest-A); color: white; }
+.quest-difficulty.B { background: var(--quest-B); color: white; }
+.quest-difficulty.C { background: var(--quest-C); color: white; }
+
+.quest-title {
+  font-size: 13px;
+  flex: 1;
+  font-weight: 500;
+}
+
+.quest-xp {
+  font-size: 10px;
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.quest-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.quest-guild-tag {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.quest-complete-btn {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.quest-complete-btn:hover {
+  border-color: var(--xp-bar);
+  color: var(--xp-bar);
+  background: rgba(81, 207, 102, 0.1);
+}
+
+/* Dialog Box (RPG style) */
+#dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 2000;
+  padding-bottom: 40px;
+}
+
+#dialog-overlay.visible { display: flex; }
+
+#dialog-box {
+  width: 700px;
+  max-width: 90vw;
+  background: var(--bg-card);
+  border: 2px solid var(--accent);
+  border-radius: 16px;
+  padding: 24px;
+  position: relative;
+  box-shadow: 0 0 40px var(--accent-glow);
+}
+
+#dialog-npc-portrait {
+  position: absolute;
+  top: -50px;
+  left: 24px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  background: var(--bg-secondary);
+}
+
+#dialog-npc-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+  margin-left: 80px;
+}
+
+#dialog-npc-affiliation {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 80px;
+  margin-bottom: 16px;
+}
+
+#dialog-text {
+  font-size: 15px;
+  line-height: 1.8;
+  margin-bottom: 16px;
+  min-height: 60px;
+}
+
+#dialog-quest-info {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+#dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dialog-btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.dialog-btn:hover { background: var(--bg-card-hover); }
+.dialog-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.dialog-btn.primary:hover { background: #6a4ae0; }
+
+/* Level Up Animation */
+#levelup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.8);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000;
+}
+
+#levelup-overlay.visible { display: flex; }
+
+.levelup-content {
+  text-align: center;
+  animation: levelUpPop 0.5s ease;
+}
+
+@keyframes levelUpPop {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.levelup-text {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 32px;
+  color: var(--gold);
+  text-shadow: 0 0 30px rgba(255,215,0,0.5);
+  margin-bottom: 12px;
+}
+
+.levelup-level {
+  font-size: 64px;
+  font-weight: 900;
+  color: var(--text-primary);
+  text-shadow: 0 0 40px var(--accent-glow);
+}
+
+.levelup-title {
+  font-size: 18px;
+  color: var(--accent);
+  margin-top: 8px;
+}
+
+/* XP Gain popup */
+.xp-popup {
+  position: fixed;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 16px;
+  color: var(--gold);
+  pointer-events: none;
+  animation: xpFloat 1.5s ease forwards;
+  z-index: 2500;
+  text-shadow: 0 0 10px rgba(255,215,0,0.5);
+}
+
+@keyframes xpFloat {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-60px); }
+}
+
+/* Epic Quest Cards */
+.epic-card {
+  background: linear-gradient(135deg, var(--bg-card), #1a1a3e);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 10px;
+}
+
+.epic-card .quest-title { color: var(--gold); }
+
+.epic-progress-bar {
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.epic-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+  border-radius: 3px;
+  transition: width 0.5s;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Responsive */
+@media (max-width: 900px) {
+  #rpg-container {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+  }
+  #player-panel { display: none; }
+}

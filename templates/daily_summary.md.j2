@@ -1,0 +1,4 @@
+#### 오늘의 기록
+{% for rec in recordings %}
+- **{{ rec.time }}** [[{{ rec.note_name }}|{{ rec.title }}]] ({{ rec.duration }}분) — {{ rec.one_liner }}
+{% endfor %}

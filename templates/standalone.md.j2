@@ -1,0 +1,14 @@
+
+# 녹음: {{ title }}
+
+- 일시: {{ rec_time }}
+- 길이: {{ duration_minutes }}분
+
+{% if summary %}## AI 요약
+
+{{ summary }}
+
+{% endif %}{% if outline %}{{ outline }}
+
+{% endif %}{% if transcript %}{{ transcript }}
+{% endif %}

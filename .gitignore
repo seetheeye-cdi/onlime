@@ -1,17 +1,53 @@
-node_modules/
-dist/
+# Environment and secrets
 .env
-*.log
-.DS_Store
+.env.*
+*.pem
+*.key
+credentials.json
+token.json
+plaud_token.txt
+client_secret*.json
 
-# 민감 정보
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Onlime local state
+.omc/
+.firecrawl/
+.claude/
+
+# Config with secrets (use onlime.toml.example for template)
+onlime.toml
 config/onlime.json
 config/state.json
 config/chats.json
+openclaw.json
 
-# 테스트 스크립트 (개인 데이터 포함)
+# Test scripts with personal data
 src/scripts/test-*.ts
 src/scripts/send-daily-brief.ts
-
-# OpenClaw
-openclaw.json
