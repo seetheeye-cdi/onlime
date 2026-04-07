@@ -519,8 +519,9 @@ async def _fetch_firecrawl(url: str) -> dict[str, str]:
 
     api_key = get_secret_or_env("firecrawl-api-key", "FIRECRAWL_API_KEY")
     host = urlparse(url).hostname or ""
+    settings = get_settings()
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=settings.web.firecrawl_timeout) as client:
         resp = await client.post(
             "https://api.firecrawl.dev/v1/scrape",
             headers={
@@ -556,7 +557,7 @@ async def _fetch_firecrawl(url: str) -> dict[str, str]:
                         "Version/17.0 Mobile/15E148 Safari/604.1"
                     ),
                 },
-                "waitFor": 2000,  # ms — let JS-rendered pages settle
+                "waitFor": settings.web.firecrawl_wait_ms,
             },
         )
         resp.raise_for_status()

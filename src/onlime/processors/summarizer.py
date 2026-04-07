@@ -6,8 +6,7 @@ import re
 
 import structlog
 
-from onlime.config import get_settings
-from onlime.security.secrets import get_secret_or_env
+from onlime.llm import LLMError, call_llm
 
 logger = structlog.get_logger()
 
@@ -80,6 +79,8 @@ def format_one_sentence_per_line(text: str) -> str:
 # Minimum text length to trigger summarization
 MIN_SUMMARIZE_LENGTH = 200
 
+_MAX_FALLBACK_PREVIEW = 500
+
 
 async def summarize(text: str, prompt_type: str = "general") -> str:
     """Summarize text using Claude (primary) or Ollama (fallback).
@@ -92,114 +93,28 @@ async def summarize(text: str, prompt_type: str = "general") -> str:
     prompt_template = _PROMPTS.get(prompt_type, _PROMPTS["general"])
     prompt = prompt_template.format(text=text)
 
-    # Try Claude first
     try:
-        return format_one_sentence_per_line(await _call_claude(prompt))
-    except Exception as exc:
-        logger.warning("summarizer.claude_failed", prompt_type=prompt_type, error=str(exc))
-
-    # Fallback to OpenAI (GPT)
-    try:
-        return format_one_sentence_per_line(await _call_openai(prompt))
-    except Exception as exc:
-        logger.warning("summarizer.openai_failed", prompt_type=prompt_type, error=str(exc))
-
-    # Fallback to Ollama (local)
-    try:
-        return format_one_sentence_per_line(await _call_ollama(prompt))
-    except Exception as exc:
-        logger.warning("summarizer.ollama_failed", prompt_type=prompt_type, error=str(exc))
-
-    # All failed — return truncated original
-    logger.error("summarizer.all_failed", prompt_type=prompt_type)
-    fallback = text[:500] + "..." if len(text) > 500 else text
-    return format_one_sentence_per_line(fallback)
+        result = await call_llm(prompt, caller="summarizer")
+        return format_one_sentence_per_line(result)
+    except LLMError:
+        logger.error("summarizer.all_failed", prompt_type=prompt_type)
+        fallback = text[:_MAX_FALLBACK_PREVIEW] + "..." if len(text) > _MAX_FALLBACK_PREVIEW else text
+        return format_one_sentence_per_line(fallback)
 
 
 async def generate_title(text: str) -> str:
-    """Generate a short title (≤10 chars Korean noun phrase) from transcript.
+    """Generate a short title (≤15 chars Korean noun phrase) from transcript.
 
-    Uses Claude Haiku for speed. Returns empty string on failure.
+    Uses Claude Sonnet for speed. Returns empty string on failure.
     """
     prompt = (
         "다음 전사본의 핵심 주제를 15자 이내 한국어 명사구로 작성해주세요. "
         "부연 설명 없이 제목만 출력하세요.\n\n" + text[:2000]
     )
     try:
-        return await _call_claude(
-            prompt, model="claude-sonnet-4-6", max_tokens=32,
+        return await call_llm(
+            prompt, model="claude-sonnet-4-6", max_tokens=32, caller="generate_title",
         )
-    except Exception:
-        pass
-    try:
-        return await _call_openai(prompt, max_tokens=32)
-    except Exception:
+    except LLMError:
         logger.warning("summarizer.generate_title_failed")
         return ""
-
-
-async def _call_claude(
-    prompt: str,
-    *,
-    model: str | None = None,
-    max_tokens: int = 2048,
-) -> str:
-    """Call Claude API for summarization."""
-    import anthropic
-
-    settings = get_settings()
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
-    response = await client.messages.create(
-        model=model or settings.llm.claude.model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    result = response.content[0].text
-    logger.info("summarizer.claude_ok", chars=len(result))
-    return result
-
-
-async def _call_openai(
-    prompt: str,
-    *,
-    model: str = "gpt-4o",
-    max_tokens: int = 2048,
-) -> str:
-    """Call OpenAI API for summarization."""
-    import openai
-
-    api_key = get_secret_or_env("openai-api-key", "OPENAI_API_KEY")
-    client = openai.AsyncOpenAI(api_key=api_key)
-
-    response = await client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    result = response.choices[0].message.content or ""
-    logger.info("summarizer.openai_ok", chars=len(result))
-    return result
-
-
-async def _call_ollama(prompt: str) -> str:
-    """Call local Ollama for summarization."""
-    import httpx
-
-    settings = get_settings()
-    base_url = settings.llm.ollama.base_url.rstrip("/")
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            f"{base_url}/api/generate",
-            json={
-                "model": settings.llm.ollama.model,
-                "prompt": prompt,
-                "stream": False,
-            },
-        )
-        resp.raise_for_status()
-        result = resp.json()["response"]
-        logger.info("summarizer.ollama_ok", chars=len(result))
-        return result

@@ -83,126 +83,100 @@ async def _run() -> None:
     engine = Engine(store)
     await engine.start()
 
-    # === FTS5 search initialization ===
     vault_search = VaultSearch(store.db)
     await vault_search.ensure_schema()
 
-    # === Background tasks (unified list) ===
-    tasks: list = []
+    # === Background tasks — declarative list ===
+    _bg_tasks: list[tuple[str, object, bool]] = [
+        # (label, instance, enabled)
+        (
+            "Vault janitor (every 30 min)",
+            VaultJanitor(interval_seconds=1800, name_index=engine._name_index),
+            True,
+        ),
+        (
+            f"KakaoTalk sync (every {settings.kakao.poll_interval_minutes} min)",
+            KakaoSync(interval_seconds=settings.kakao.poll_interval_minutes * 60),
+            settings.kakao.enabled and settings.kakao.use_kakaocli,
+        ),
+        (
+            "GCal sync (every {0} min)".format(settings.gcal.schedule_minutes),
+            GCalSyncTask(interval_seconds=settings.gcal.schedule_minutes * 60),
+            settings.gcal.enabled,
+        ),
+        (
+            "Vault FTS5 indexer (every 10 min)",
+            VaultIndexTask(interval_seconds=600, search=vault_search),
+            True,
+        ),
+    ]
 
-    # 1) Vault janitor (always)
-    janitor = VaultJanitor(interval_seconds=1800, name_index=engine._name_index)
-    try:
-        await janitor.start(store)
-        tasks.append(janitor)
-        click.echo("Vault janitor started (every 30 min).")
-    except Exception as exc:
-        click.echo(f"Vault janitor failed to start: {exc}")
-
-    # 2) KakaoSync (kakaocli mode)
-    kakao_sync_running = False
-    if settings.kakao.enabled and settings.kakao.use_kakaocli:
-        kakao_sync = KakaoSync(
-            interval_seconds=settings.kakao.poll_interval_minutes * 60,
-        )
-        try:
-            await kakao_sync.start(store)
-            tasks.append(kakao_sync)
-            kakao_sync_running = True
-            click.echo(f"KakaoTalk sync started (every "
-                        f"{settings.kakao.poll_interval_minutes} min).")
-        except Exception as exc:
-            click.echo(f"KakaoTalk sync failed to start: {exc}")
-
-    # 3) GDrive rescan (periodic catch-up for files missed during sleep)
+    # GDrive rescan needs engine.queue — conditional import
     if settings.gdrive.enabled and settings.gdrive.watch_paths:
         from onlime.connectors.gdrive import GDriveRescanTask
+        _bg_tasks.insert(2, (
+            "GDrive rescan (every 30 min)",
+            GDriveRescanTask(interval_seconds=1800, queue=engine.queue),
+            True,
+        ))
 
-        rescan = GDriveRescanTask(interval_seconds=1800, queue=engine.queue)
+    tasks: list = []
+    kakao_sync_running = False
+    for label, task_obj, enabled in _bg_tasks:
+        if not enabled:
+            continue
         try:
-            await rescan.start(store)
-            tasks.append(rescan)
-            click.echo("GDrive rescan started (every 30 min).")
+            await task_obj.start(store)
+            tasks.append(task_obj)
+            if "KakaoTalk sync" in label:
+                kakao_sync_running = True
+            click.echo(f"{label} started.")
         except Exception as exc:
-            click.echo(f"GDrive rescan failed to start: {exc}")
+            click.echo(f"{label} failed to start: {exc}")
 
-    # 4) GCal sync (when enabled)
-    if settings.gcal.enabled:
-        gcal_sync = GCalSyncTask(
-            interval_seconds=settings.gcal.schedule_minutes * 60,
-        )
-        try:
-            await gcal_sync.start(store)
-            tasks.append(gcal_sync)
-            click.echo(f"GCal sync started (every {settings.gcal.schedule_minutes} min).")
-        except Exception as exc:
-            click.echo(f"GCal sync failed to start: {exc}")
+    # === Connectors — declarative list ===
+    _conn_defs: list[tuple[str, str, str, bool]] = [
+        # (label, module_path, class_name, enabled)
+        ("Telegram bot", "onlime.connectors.telegram", "TelegramConnector",
+         settings.telegram_bot.enabled),
+        ("GDrive watcher", "onlime.connectors.gdrive", "GDriveConnector",
+         settings.gdrive.enabled and bool(settings.gdrive.watch_paths)),
+        ("Slack connector", "onlime.connectors.slack", "SlackConnector",
+         settings.slack.enabled),
+    ]
 
-    # 5) Vault FTS5 indexer (always)
-    vault_index = VaultIndexTask(interval_seconds=600, search=vault_search)
-    try:
-        await vault_index.start(store)
-        tasks.append(vault_index)
-        click.echo("Vault FTS5 indexer started (every 10 min).")
-    except Exception as exc:
-        click.echo(f"Vault FTS5 indexer failed to start: {exc}")
-
-    # === Connectors ===
     connectors = []
-
-    # Telegram bot
-    if settings.telegram_bot.enabled:
-        from onlime.connectors.telegram import TelegramConnector
-
-        tg = TelegramConnector()
+    for label, mod_path, cls_name, enabled in _conn_defs:
+        if not enabled:
+            continue
         try:
-            await tg.start(engine.queue)
-            engine.set_telegram_app(tg._app)
-            tg.set_vault_search(vault_search)
-            connectors.append(tg)
-            click.echo("Telegram bot started.")
+            import importlib
+            mod = importlib.import_module(mod_path)
+            cls = getattr(mod, cls_name)
+            conn = cls()
+            await conn.start(engine.queue)
+            connectors.append(conn)
+            # Telegram-specific wiring
+            if cls_name == "TelegramConnector":
+                engine.set_telegram_app(conn._app)
+                conn.set_vault_search(vault_search)
+            click.echo(f"{label} started.")
         except Exception as exc:
-            click.echo(f"Telegram bot failed to start: {exc}")
-
-    # GDrive watcher (real-time via watchdog)
-    if settings.gdrive.enabled and settings.gdrive.watch_paths:
-        from onlime.connectors.gdrive import GDriveConnector
-
-        gdrive = GDriveConnector()
-        try:
-            await gdrive.start(engine.queue)
-            connectors.append(gdrive)
-            click.echo("GDrive watcher started.")
-        except Exception as exc:
-            click.echo(f"GDrive watcher failed to start: {exc}")
-
-    # Slack poller
-    if settings.slack.enabled:
-        from onlime.connectors.slack import SlackConnector
-
-        slack_conn = SlackConnector()
-        try:
-            await slack_conn.start(engine.queue)
-            connectors.append(slack_conn)
-            click.echo("Slack connector started.")
-        except Exception as exc:
-            click.echo(f"Slack connector failed: {exc}")
+            click.echo(f"{label} failed to start: {exc}")
 
     # KakaoTalk .txt watcher (fallback for manual exports)
     if settings.kakao.enabled and settings.kakao.export_dir and not kakao_sync_running:
-        from onlime.connectors.kakao import KakaoConnector
-
-        kakao_conn = KakaoConnector()
         try:
+            from onlime.connectors.kakao import KakaoConnector
+            kakao_conn = KakaoConnector()
             await kakao_conn.start(engine.queue)
             connectors.append(kakao_conn)
             click.echo("KakaoTalk watcher started.")
         except Exception as exc:
-            click.echo(f"KakaoTalk watcher failed: {exc}")
+            click.echo(f"KakaoTalk watcher failed to start: {exc}")
 
     click.echo("Onlime running. Press Ctrl+C to stop.")
 
-    # Graceful shutdown via signal
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -210,7 +184,6 @@ async def _run() -> None:
 
     await shutdown_event.wait()
 
-    # === Unified shutdown ===
     click.echo("\nShutting down...")
     for conn in reversed(connectors):
         await conn.stop()

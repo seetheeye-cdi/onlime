@@ -51,3 +51,6 @@ openclaw.json
 # Test scripts with personal data
 src/scripts/test-*.ts
 src/scripts/send-daily-brief.ts
+
+# pip artifacts
+=*

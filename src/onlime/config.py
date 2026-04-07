@@ -105,6 +105,8 @@ class WebSettings(BaseModel):
     max_content_length: int = 500_000
     summary_model: str = "claude"
     youtube_prefer_transcript: bool = True
+    firecrawl_timeout: float = 45.0
+    firecrawl_wait_ms: int = 2000
 
 
 class STTSettings(BaseModel):
@@ -126,6 +128,7 @@ class LLMSettings(BaseModel):
     default_timeout: int = 30
     daily_token_limit: int = 1_200_000
     claude: LLMProviderConfig = LLMProviderConfig(model="claude-sonnet-4-6")
+    openai_model: str = "gpt-4o"
     ollama: LLMProviderConfig = LLMProviderConfig(model="gemma2:9b", base_url="http://localhost:11434")
 
 

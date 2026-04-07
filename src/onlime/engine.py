@@ -141,15 +141,195 @@ class Engine:
                 logger.exception("worker.error", worker=name, event_id=event.get("id"))
                 self.queue.task_done()
 
+    # ------------------------------------------------------------------
+    # Content-type enrichment helpers
+    # ------------------------------------------------------------------
+
+    async def _enrich_voice(
+        self, raw: RawEvent, extra_fm: dict[str, Any], event_id: str,
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        """STT + filename parsing for voice content.
+
+        Returns (full_text, template_name, recording_info).
+        """
+        file_name = raw.metadata.get("file_name", "")
+        recording_info = _parse_recording_filename(file_name)
+        if recording_info["recorded_at"]:
+            raw.timestamp = recording_info["recorded_at"]
+
+        full_text = raw.raw_content
+        template_name: str | None = None
+
+        audio_path = raw.metadata.get("file_path")
+        if audio_path:
+            try:
+                from onlime.processors.stt import transcribe
+                full_text = await transcribe(audio_path)
+                logger.info("engine.stt_done", event_id=event_id, chars=len(full_text))
+                template_name = "recording.md.j2"
+                extra_fm["transcript"] = full_text
+                extra_fm["file_name"] = file_name
+                size_bytes = raw.metadata.get("file_size")
+                if size_bytes:
+                    extra_fm["file_size_mb"] = round(size_bytes / (1024 * 1024), 2)
+                extra_fm["recorded_at"] = raw.timestamp.isoformat()
+            except Exception:
+                logger.exception("engine.stt_failed", event_id=event_id)
+
+        return full_text, template_name, recording_info
+
+    async def _enrich_photo(
+        self, raw: RawEvent, extra_fm: dict[str, Any], event_id: str,
+    ) -> tuple[str, str | None]:
+        """EXIF extraction + Claude Vision for photos.
+
+        Returns (full_text, template_name).
+        """
+        full_text = raw.raw_content
+        template_name: str | None = None
+
+        image_path = raw.metadata.get("file_path")
+        if not image_path:
+            return full_text, template_name
+
+        try:
+            from onlime.processors.photo import analyze_photo, extract_metadata
+
+            meta = await extract_metadata(image_path)
+            logger.info("engine.photo_exif", event_id=event_id, meta_keys=list(meta.keys()))
+
+            if meta.get("taken_at"):
+                raw.timestamp = meta["taken_at"]
+                extra_fm["taken_at"] = meta["taken_at"].strftime("%Y-%m-%d %H:%M:%S")
+            if meta.get("camera"):
+                extra_fm["camera"] = meta["camera"]
+            if meta.get("gps_lat") is not None:
+                extra_fm["gps_lat"] = meta["gps_lat"]
+                extra_fm["gps_lon"] = meta["gps_lon"]
+            if meta.get("location"):
+                extra_fm["location"] = meta["location"]
+            if meta.get("width"):
+                extra_fm["width"] = meta["width"]
+                extra_fm["height"] = meta["height"]
+            if meta.get("file_size_mb"):
+                extra_fm["file_size_mb"] = meta["file_size_mb"]
+
+            vision = await analyze_photo(image_path)
+            logger.info("engine.photo_vision", event_id=event_id, title=vision.get("title"))
+            full_text = vision.get("description", "")
+            extra_fm["photo_description"] = full_text
+            extra_fm["vision_title"] = vision.get("title", "사진")
+            extra_fm["vision_tags"] = vision.get("tags", [])
+            template_name = "photo.md.j2"
+        except Exception:
+            logger.exception("engine.photo_failed", event_id=event_id)
+
+        return full_text, template_name
+
+    async def _enrich_web(
+        self, raw: RawEvent, extra_fm: dict[str, Any], event_id: str,
+    ) -> tuple[str, str | None]:
+        """Firecrawl/trafilatura extraction for web links.
+
+        Returns (full_text, template_name).
+        """
+        from onlime.connectors.web import extract_urls, fetch_content
+
+        full_text = raw.raw_content
+        template_name: str | None = None
+
+        urls = extract_urls(raw.raw_content)
+        if not urls:
+            return full_text, template_name
+
+        try:
+            web_result = await fetch_content(urls[0])
+            web_source_type = web_result.get("source_type", "article")
+            extra_fm["url"] = web_result["url"]
+            extra_fm["source_type"] = web_source_type
+            if web_result.get("title") and web_result["title"] != urls[0]:
+                extra_fm["web_title"] = web_result["title"]
+            if web_result["text"]:
+                full_text = web_result["text"]
+                if web_result.get("creator"):
+                    extra_fm["creator"] = web_result["creator"]
+                if web_result.get("published_at"):
+                    extra_fm["publish_date"] = web_result["published_at"]
+                if web_result.get("og_image"):
+                    extra_fm["og_image"] = web_result["og_image"]
+                if web_result.get("description"):
+                    extra_fm["description"] = web_result["description"]
+                if web_result.get("transcript"):
+                    extra_fm["transcript"] = web_result["transcript"]
+            template_name = "resource.md.j2"
+            # Reclassify ContentType so categorizer routes correctly
+            if web_source_type == "youtube":
+                raw.content_type = ContentType.VIDEO
+            elif web_source_type in ("article", "newsletter", "blog"):
+                raw.content_type = ContentType.ARTICLE
+            logger.info(
+                "engine.web_done", event_id=event_id,
+                url=urls[0], source_type=web_source_type,
+            )
+        except Exception:
+            logger.exception("engine.web_failed", event_id=event_id, url=urls[0])
+
+        return full_text, template_name
+
+    async def _send_telegram_confirmation(
+        self, chat_id: int, message_id: int | None,
+        note_path: Any, vault_root: Any, event_id: str,
+    ) -> None:
+        """Send Telegram confirmation with Obsidian deep-link."""
+        from html import escape as html_escape
+        from urllib.parse import quote
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram.constants import ParseMode
+
+        rel_path = note_path.relative_to(vault_root.expanduser())
+        vault_name = vault_root.expanduser().name
+        obsidian_file = str(rel_path.with_suffix("")).replace("\\", "/")
+
+        link_url = (
+            f"https://seetheeye-cdi.github.io/onlime-open/"
+            f"?vault={quote(vault_name, safe='')}"
+            f"&file={quote(obsidian_file, safe='/')}"
+        )
+
+        safe_path = html_escape(str(rel_path))
+        html_text = f"저장했습니다\n📝 <code>{safe_path}</code>"
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📂 옵시디언에서 열기", url=link_url)]]
+        )
+
+        try:
+            await self._telegram_app.bot.send_message(
+                chat_id=chat_id, text=html_text,
+                parse_mode=ParseMode.HTML, reply_to_message_id=message_id,
+                disable_web_page_preview=True, reply_markup=keyboard,
+            )
+        except Exception:
+            logger.warning("engine.telegram_link_failed", event_id=event_id)
+            await self._telegram_app.bot.send_message(
+                chat_id=chat_id,
+                text=f"저장했습니다: `{rel_path}`\n{link_url}",
+                reply_to_message_id=message_id,
+                disable_web_page_preview=True,
+            )
+
+    # ------------------------------------------------------------------
+    # Main pipeline orchestrator
+    # ------------------------------------------------------------------
+
     async def _process(self, event: dict[str, Any]) -> None:
         """Process a single event through the pipeline.
 
-        Stages: Save → STT (voice) → Web extract (link) → Summarize → Categorize → Write → Confirm.
+        Stages: Save → Enrich → Summarize → Categorize → Write → Confirm.
         """
         event_id = event.get("id", "unknown")
         logger.info("engine.processing", event_id=event_id)
 
-        # Extract telegram metadata before converting
         chat_id = event.pop("_telegram_chat_id", None)
         message_id = event.pop("_telegram_message_id", None)
 
@@ -157,11 +337,8 @@ class Engine:
 
         # 1. Save to state DB
         saved = await self.state.save_event(
-            event_id=raw.id,
-            source_type=raw.source.value,
-            source_id=raw.id,
-            connector_name=raw.source.value,
-            payload=event,
+            event_id=raw.id, source_type=raw.source.value,
+            source_id=raw.id, connector_name=raw.source.value, payload=event,
         )
         if not saved:
             logger.info("engine.duplicate", event_id=event_id)
@@ -173,119 +350,25 @@ class Engine:
             full_text = raw.raw_content
             extra_fm: dict[str, Any] = {}
             template_name: str | None = None
-
-            # 2a. STT for voice content
             recording_info: dict[str, Any] = {}
+
+            # 2. Content-type enrichment
             if raw.content_type == ContentType.VOICE:
-                # Parse Samsung filename for contact/time metadata
-                file_name = raw.metadata.get("file_name", "")
-                recording_info = _parse_recording_filename(file_name)
-                if recording_info["recorded_at"]:
-                    raw.timestamp = recording_info["recorded_at"]
-
-                audio_path = raw.metadata.get("file_path")
-                if audio_path:
-                    try:
-                        from onlime.processors.stt import transcribe
-                        full_text = await transcribe(audio_path)
-                        logger.info("engine.stt_done", event_id=event_id, chars=len(full_text))
-                        template_name = "recording.md.j2"
-                        extra_fm["transcript"] = full_text
-                        extra_fm["file_name"] = file_name
-                        size_bytes = raw.metadata.get("file_size")
-                        if size_bytes:
-                            extra_fm["file_size_mb"] = round(size_bytes / (1024 * 1024), 2)
-                        extra_fm["recorded_at"] = raw.timestamp.isoformat()
-                    except Exception:
-                        logger.exception("engine.stt_failed", event_id=event_id)
-                        full_text = raw.raw_content  # keep original placeholder
-
-            # 2b. Photo analysis (EXIF + Claude Vision)
-            if raw.content_type == ContentType.PHOTO:
-                image_path = raw.metadata.get("file_path")
-                if image_path:
-                    try:
-                        from onlime.processors.photo import analyze_photo, extract_metadata
-
-                        meta = await extract_metadata(image_path)
-                        logger.info("engine.photo_exif", event_id=event_id, meta_keys=list(meta.keys()))
-
-                        # Store EXIF info in frontmatter
-                        if meta.get("taken_at"):
-                            raw.timestamp = meta["taken_at"]
-                            extra_fm["taken_at"] = meta["taken_at"].strftime("%Y-%m-%d %H:%M:%S")
-                        if meta.get("camera"):
-                            extra_fm["camera"] = meta["camera"]
-                        if meta.get("gps_lat") is not None:
-                            extra_fm["gps_lat"] = meta["gps_lat"]
-                            extra_fm["gps_lon"] = meta["gps_lon"]
-                        if meta.get("location"):
-                            extra_fm["location"] = meta["location"]
-                        if meta.get("width"):
-                            extra_fm["width"] = meta["width"]
-                            extra_fm["height"] = meta["height"]
-                        if meta.get("file_size_mb"):
-                            extra_fm["file_size_mb"] = meta["file_size_mb"]
-
-                        # Claude Vision analysis
-                        vision = await analyze_photo(image_path)
-                        logger.info("engine.photo_vision", event_id=event_id, title=vision.get("title"))
-                        full_text = vision.get("description", "")
-                        extra_fm["photo_description"] = full_text
-                        extra_fm["vision_title"] = vision.get("title", "사진")
-                        extra_fm["vision_tags"] = vision.get("tags", [])
-                        template_name = "photo.md.j2"
-                    except Exception:
-                        logger.exception("engine.photo_failed", event_id=event_id)
-
-            # 2c. Web extraction for links
-            web_source_type = ""
-            if raw.content_type == ContentType.LINK:
-                from onlime.connectors.web import extract_urls, fetch_content
-                urls = extract_urls(raw.raw_content)
-                if urls:
-                    try:
-                        web_result = await fetch_content(urls[0])
-                        web_source_type = web_result.get("source_type", "article")
-                        # Always preserve URL and source_type (even if text is empty)
-                        extra_fm["url"] = web_result["url"]
-                        extra_fm["source_type"] = web_source_type
-                        if web_result.get("title") and web_result["title"] != urls[0]:
-                            extra_fm["web_title"] = web_result["title"]
-                        if web_result["text"]:
-                            full_text = web_result["text"]
-                            if web_result.get("creator"):
-                                extra_fm["creator"] = web_result["creator"]
-                            if web_result.get("published_at"):
-                                extra_fm["publish_date"] = web_result["published_at"]
-                            if web_result.get("og_image"):
-                                extra_fm["og_image"] = web_result["og_image"]
-                            if web_result.get("description"):
-                                extra_fm["description"] = web_result["description"]
-                            if web_result.get("transcript"):
-                                extra_fm["transcript"] = web_result["transcript"]
-                        template_name = "resource.md.j2"
-                        # Reclassify ContentType so categorizer routes correctly:
-                        #   youtube                    → VIDEO   → 1.INPUT/Media
-                        #   article/newsletter/blog    → ARTICLE → 1.INPUT/Article
-                        #   community                  → LINK stays → Inbox
-                        if web_source_type == "youtube":
-                            raw.content_type = ContentType.VIDEO
-                        elif web_source_type in ("article", "newsletter", "blog"):
-                            raw.content_type = ContentType.ARTICLE
-                        logger.info(
-                            "engine.web_done",
-                            event_id=event_id,
-                            url=urls[0],
-                            source_type=web_source_type,
-                        )
-                    except Exception:
-                        logger.exception("engine.web_failed", event_id=event_id, url=urls[0])
+                full_text, template_name, recording_info = await self._enrich_voice(
+                    raw, extra_fm, event_id,
+                )
+            elif raw.content_type == ContentType.PHOTO:
+                full_text, template_name = await self._enrich_photo(
+                    raw, extra_fm, event_id,
+                )
+            elif raw.content_type == ContentType.LINK:
+                full_text, template_name = await self._enrich_web(
+                    raw, extra_fm, event_id,
+                )
 
             # 3. Summarize (skip for PHOTO — Vision result serves as summary)
-            summary = ""
             if raw.content_type == ContentType.PHOTO:
-                summary = full_text  # Vision description is the summary
+                summary = full_text
             else:
                 prompt_type = "general"
                 if raw.source in (SourceType.KAKAO, SourceType.SLACK):
@@ -296,49 +379,39 @@ class Engine:
                     prompt_type = "voice_memo"
                 summary = await summarize(full_text, prompt_type)
 
-            # 3a. Resolve wikilinks in summary against vault name index
             if summary:
                 summary = resolve_wikilinks(summary, self._name_index)
 
-            # 3b. Extract keywords → [[wikilinks]]
+            # 4. Extract keywords
             keywords: list[str] = []
             if raw.content_type == ContentType.PHOTO:
-                # Use Vision-generated tags as keywords
                 keywords = extra_fm.get("vision_tags", [])
                 keywords = resolve_keywords(keywords, self._name_index)
             else:
                 try:
                     from onlime.processors.keywords import extract_keywords, to_wikilinks
                     keywords = await extract_keywords(full_text)
-                    # 3c. Resolve keywords against vault name index
                     keywords = resolve_keywords(keywords, self._name_index)
                     logger.info("engine.keywords", event_id=event_id, count=len(keywords))
                 except Exception:
                     logger.warning("engine.keywords_failed", event_id=event_id)
 
-            # 4. Categorize → vault folder
+            # 5. Categorize + build ProcessedEvent
             category = categorize(raw)
-
-            # 5. Build ProcessedEvent
             title = extra_fm.get("web_title") or _make_title(raw)
             hashtags = extract_hashtags(raw.raw_content)
             hashtags.extend(raw.metadata.get("hashtags", []))
             people: list[str] = []
 
-            # 5a. Photo: use Vision-generated title
             if raw.content_type == ContentType.PHOTO:
-                vision_title = extra_fm.get("vision_title", "사진")
-                title = f"{vision_title}-사진"
+                title = f"{extra_fm.get('vision_title', '사진')}-사진"
                 logger.info("engine.photo_title", event_id=event_id, title=title)
-
-            # 5b. Voice: generate content-based title + extract people
             elif raw.content_type == ContentType.VOICE and full_text and full_text != raw.raw_content:
                 generated = await generate_title(full_text)
                 contact = recording_info.get("contact")
                 rec_type = recording_info.get("type", "voice_memo")
                 if contact:
                     people.append(contact)
-                # Title format: "{주제}-음성-통화" or "{주제}-음성-메모"
                 topic = generated or _make_title(raw)
                 type_suffix = "통화" if rec_type == "call" else "메모"
                 title = f"{topic}-음성-{type_suffix}"
@@ -349,14 +422,9 @@ class Engine:
                 extra_fm["keywords"] = to_wikilinks(keywords)
 
             processed = ProcessedEvent(
-                raw_event_id=raw.id,
-                title=title,
-                summary=summary,
-                full_text=full_text,
-                category=category,
-                timestamp=raw.timestamp,
-                tags=list(set(hashtags)),
-                people=people,
+                raw_event_id=raw.id, title=title, summary=summary,
+                full_text=full_text, category=category, timestamp=raw.timestamp,
+                tags=list(set(hashtags)), people=people,
             )
 
             # 6. Write to vault
@@ -365,7 +433,7 @@ class Engine:
             note_path = write_note(vault_root, category, processed, template_name, extra_fm)
             processed.vault_path = str(note_path)
 
-            # 6a. Append to daily note for recordings
+            # 6a. Append to daily note
             if raw.content_type == ContentType.VOICE:
                 try:
                     time_str = raw.timestamp.strftime("%H:%M")
@@ -376,9 +444,7 @@ class Engine:
                     append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
                 except Exception:
                     logger.warning("engine.daily_note_failed", event_id=event_id)
-
-            # 6b. Append to daily note for photos
-            if raw.content_type == ContentType.PHOTO:
+            elif raw.content_type == ContentType.PHOTO:
                 try:
                     time_str = raw.timestamp.strftime("%H:%M")
                     note_link = f"[[{note_path.stem}]]"
@@ -393,54 +459,11 @@ class Engine:
             await self.state.update_event_status(raw.id, "done", obsidian_path=str(note_path))
             logger.info("engine.done", event_id=event_id, vault_path=str(note_path))
 
-            # 8. Send Telegram confirmation with Obsidian deep-link
+            # 8. Send Telegram confirmation
             if chat_id and self._telegram_app:
-                from html import escape as html_escape
-                from urllib.parse import quote
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                from telegram.constants import ParseMode
-
-                rel_path = note_path.relative_to(vault_root.expanduser())
-                vault_name = vault_root.expanduser().name  # e.g. "Obsidian_sinc"
-                # Obsidian file path: no .md extension, forward slashes
-                obsidian_file = str(rel_path.with_suffix("")).replace("\\", "/")
-
-                # Telegram rejects custom URL schemes (obsidian://) in entities
-                # and inline buttons — only http/https/tg/mailto are accepted.
-                # GitHub Pages static page at this URL runs JS that does
-                # window.location.replace("obsidian://open?...") so the link
-                # opens Obsidian on both desktop Mac and mobile phone.
-                link_url = (
-                    f"https://seetheeye-cdi.github.io/onlime-open/"
-                    f"?vault={quote(vault_name, safe='')}"
-                    f"&file={quote(obsidian_file, safe='/')}"
+                await self._send_telegram_confirmation(
+                    chat_id, message_id, note_path, vault_root, event_id,
                 )
-
-                safe_path = html_escape(str(rel_path))
-                # <code> wrap avoids Telegram auto-linking `.md` as Moldova TLD.
-                html_text = f"저장했습니다\n📝 <code>{safe_path}</code>"
-                keyboard = InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("📂 옵시디언에서 열기", url=link_url)]]
-                )
-
-                try:
-                    await self._telegram_app.bot.send_message(
-                        chat_id=chat_id,
-                        text=html_text,
-                        parse_mode=ParseMode.HTML,
-                        reply_to_message_id=message_id,
-                        disable_web_page_preview=True,
-                        reply_markup=keyboard,
-                    )
-                except Exception:
-                    logger.warning("engine.telegram_link_failed", event_id=event_id)
-                    # Plain-text fallback — filename wrapped in backticks to avoid TLD auto-link.
-                    await self._telegram_app.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"저장했습니다: `{rel_path}`\n{link_url}",
-                        reply_to_message_id=message_id,
-                        disable_web_page_preview=True,
-                    )
 
         except Exception as exc:
             await self.state.update_event_status(raw.id, "failed", error=str(exc))
@@ -448,7 +471,6 @@ class Engine:
 
             if chat_id and self._telegram_app:
                 await self._telegram_app.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"처리 실패: {exc}",
+                    chat_id=chat_id, text=f"처리 실패: {exc}",
                     reply_to_message_id=message_id,
                 )

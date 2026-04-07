@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 
 import structlog
 
-from onlime.config import get_settings
-from onlime.security.secrets import get_secret_or_env
+from onlime.llm import LLMError, call_llm_json
 
 logger = structlog.get_logger()
 
@@ -28,6 +26,9 @@ _PROMPT = """다음 텍스트에서 핵심 키워드를 5~10개 추출해주세�
 {text}"""
 
 
+_MAX_KEYWORD_INPUT = 3000
+
+
 async def extract_keywords(text: str) -> list[str]:
     """Extract keywords from text using LLM.
 
@@ -36,102 +37,18 @@ async def extract_keywords(text: str) -> list[str]:
     if len(text) < 50:
         return []
 
-    # Truncate very long text for the keyword prompt
-    truncated = text[:3000] if len(text) > 3000 else text
+    truncated = text[:_MAX_KEYWORD_INPUT] if len(text) > _MAX_KEYWORD_INPUT else text
     prompt = _PROMPT.format(text=truncated)
 
     try:
-        return await _call_claude(prompt)
-    except Exception as exc:
-        logger.warning("keywords.claude_failed", error=str(exc))
-
-    try:
-        return await _call_openai(prompt)
-    except Exception as exc:
-        logger.warning("keywords.openai_failed", error=str(exc))
-
-    try:
-        return await _call_ollama(prompt)
-    except Exception as exc:
-        logger.warning("keywords.ollama_failed", error=str(exc))
-
-    # Fallback: simple regex-based extraction
-    return _fallback_extract(text)
+        return await call_llm_json(prompt, caller="keywords")
+    except LLMError:
+        return _fallback_extract(text)
 
 
 def to_wikilinks(keywords: list[str]) -> list[str]:
     """Convert keyword list to [[wikilink]] format."""
     return [f"[[{kw}]]" for kw in keywords if kw.strip()]
-
-
-async def _call_claude(prompt: str) -> list[str]:
-    """Call Claude for keyword extraction."""
-    import anthropic
-
-    settings = get_settings()
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
-    response = await client.messages.create(
-        model=settings.llm.claude.model,
-        max_tokens=256,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = response.content[0].text.strip()
-    return _parse_json_list(raw)
-
-
-async def _call_openai(prompt: str) -> list[str]:
-    """Call OpenAI for keyword extraction."""
-    import openai
-
-    api_key = get_secret_or_env("openai-api-key", "OPENAI_API_KEY")
-    client = openai.AsyncOpenAI(api_key=api_key)
-
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        max_tokens=256,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = (response.choices[0].message.content or "").strip()
-    return _parse_json_list(raw)
-
-
-async def _call_ollama(prompt: str) -> list[str]:
-    """Call Ollama for keyword extraction."""
-    import httpx
-
-    settings = get_settings()
-    base_url = settings.llm.ollama.base_url.rstrip("/")
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{base_url}/api/generate",
-            json={
-                "model": settings.llm.ollama.model,
-                "prompt": prompt,
-                "stream": False,
-            },
-        )
-        resp.raise_for_status()
-        raw = resp.json()["response"].strip()
-        return _parse_json_list(raw)
-
-
-def _parse_json_list(raw: str) -> list[str]:
-    """Parse a JSON array from LLM response, tolerating extra text."""
-    # Find JSON array in response
-    match = re.search(r"\[.*?\]", raw, re.DOTALL)
-    if match:
-        try:
-            result = json.loads(match.group(0))
-            if isinstance(result, list):
-                return [str(item).strip() for item in result if item]
-        except json.JSONDecodeError:
-            pass
-    # Fallback: split by comma/newline
-    items = re.findall(r'"([^"]+)"', raw)
-    return items[:10] if items else []
 
 
 def _fallback_extract(text: str) -> list[str]:
