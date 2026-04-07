@@ -1,8 +1,38 @@
+# {{ event.title }}
 
-# 녹음: {{ title }}
+{% if frontmatter.people is defined and frontmatter.people %}
+{% for person in frontmatter.people %}
+> 통화 상대: {{ person }}
+{% endfor %}
+{% endif %}
+{% if frontmatter.file_name is defined %}
+> 파일: `{{ frontmatter.file_name }}`
+{% endif %}
+{% if frontmatter.recorded_at is defined %}
+> 녹음 시각: {{ frontmatter.recorded_at }}
+{% endif %}
+{% if frontmatter.duration_sec is defined %}
+> 길이: {{ frontmatter.duration_sec }}초
+{% endif %}
+{% if frontmatter.file_size_mb is defined %}
+> 크기: {{ frontmatter.file_size_mb }} MB
+{% endif %}
 
-- 일시: {{ rec_time }}
-{% if duration_minutes is not none %}- 길이: {{ duration_minutes }}분
-{% endif %}- 포맷: {{ extension }}
-- 크기: {{ file_size }}
-- 파일: `{{ file_path }}`
+{% if frontmatter.keywords is defined %}
+## 키워드
+
+{% for kw in frontmatter.keywords %}{{ kw }} {% endfor %}
+
+{% endif %}
+{% if event.summary %}
+## 요약
+
+{{ event.summary }}
+
+{% endif %}
+{% if frontmatter.transcript is defined and frontmatter.transcript %}
+## 전사 전문
+
+{{ frontmatter.transcript }}
+
+{% endif %}

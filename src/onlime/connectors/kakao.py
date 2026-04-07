@@ -1,279 +1,575 @@
-"""KakaoTalk notification connector.
+"""KakaoTalk connector — watches a folder for '대화 내보내기' .txt exports.
 
-Receives notification data pushed from an Android phone via Termux,
-parses it, and returns normalized ConnectorResult objects.
+Supports two export formats:
+  - Desktop (macOS app): `[발신자] [오후 3:20] 메시지`, dashed date separators
+  - Mobile (iOS/Android): `2023. 2. 8. 오후 3:20, 발신자 : 메시지`, plain date lines
 """
+
 from __future__ import annotations
 
-import hashlib
-import logging
+import asyncio
+import re
+import unicodedata
 from datetime import datetime
-from threading import Lock
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
+import structlog
+from watchdog.events import FileCreatedEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+
 from onlime.config import get_settings
-from onlime.connectors.base import BaseConnector, ConnectorResult
+from onlime.connectors.base import BaseConnector
 from onlime.connectors.registry import register
+from onlime.models import ContentType, SourceType
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
-# Package name → app label mapping
-PACKAGE_TO_APP = {
-    "com.kakao.talk": "kakao",
-    "com.Slack": "slack",
-    "org.telegram.messenger": "telegram",
-    "com.instagram.android": "instagram",
-}
+# --- Format A: Desktop (macOS KakaoTalk app) ---
+_DESKTOP_DATE_RE = re.compile(r"^-+ (\d{4}년 \d{1,2}월 \d{1,2}일 \S+요일) -+$")
+_DESKTOP_MSG_RE = re.compile(r"^\[(.+?)\] \[(오전|오후) (\d{1,2}:\d{2})\] (.+)")
+_DESKTOP_HEADER_RE = re.compile(r"^(.+?) (?:카카오톡 대화|님과 카카오톡 대화)$")
 
-# Safety limits to prevent unbounded memory growth from sustained ingestion.
-_MAX_SEEN_IDS = 50_000
-_MAX_STORED_MESSAGES = 10_000
+# --- Format B: Mobile (iOS/Android) ---
+_MOBILE_DATE_RE = re.compile(r"^(\d{4})년 (\d{1,2})월 (\d{1,2})일 \S+요일$")
+_MOBILE_MSG_RE = re.compile(
+    r"^(\d{4})\. (\d{1,2})\. (\d{1,2})\. (오전|오후) (\d{1,2}):(\d{2}), (.+?) : (.+)"
+)
 
-
-def _get_tz() -> ZoneInfo:
-    return ZoneInfo(get_settings().general.timezone)
+_SAVE_DATE_RE = re.compile(r"^저장한 날짜\s*:\s*(.+)$")
+_FOLDER_ROOM_RE = re.compile(r"Kakaotalk_Chat_(.+)")
 
 
-def _message_hash(title: str, text: str, timestamp_ms: int) -> str:
-    """Compute a stable deduplication key from title + text + timestamp.
+def _parse_kr_date(text: str) -> str | None:
+    """Parse '2026년 4월 5일 토요일' → '2026-04-05'."""
+    m = re.match(r"(\d{4})년\s+(\d{1,2})월\s+(\d{1,2})일", text)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return None
 
-    Matches the client-side fingerprint in termux_capture.py which uses
-    title + content + when — keeping them aligned prevents false duplicates.
+
+def _parse_kr_time(ampm: str, time_str: str) -> str:
+    """Parse '오후 3:20' → '15:20'."""
+    h, m = time_str.split(":")
+    hour = int(h)
+    if ampm == "오후" and hour != 12:
+        hour += 12
+    elif ampm == "오전" and hour == 12:
+        hour = 0
+    return f"{hour:02d}:{m}"
+
+
+def _detect_format(lines: list[str]) -> str:
+    """Detect export format by scanning the first ~20 content lines."""
+    for line in lines[:30]:
+        if _DESKTOP_DATE_RE.match(line) or _DESKTOP_MSG_RE.match(line):
+            return "desktop"
+        if _MOBILE_DATE_RE.match(line) or _MOBILE_MSG_RE.match(line):
+            return "mobile"
+    return "unknown"
+
+
+def _extract_room_name(lines: list[str], path: Path) -> str:
+    """Extract room name from header line, folder name, or filename."""
+    # Try desktop header: "방이름 카카오톡 대화"
+    if lines:
+        header_m = _DESKTOP_HEADER_RE.match(lines[0])
+        if header_m:
+            return header_m.group(1).strip()
+    # Try folder name: "Kakaotalk_Chat_송현아"
+    folder_m = _FOLDER_ROOM_RE.match(path.parent.name)
+    if folder_m:
+        return folder_m.group(1)
+    # Fallback to filename stem
+    return path.stem
+
+
+def _parse_desktop(lines: list[str], nickname_map: dict[str, str]) -> dict[str, list[dict[str, str]]]:
+    """Parse desktop format lines into {date: [messages]}."""
+    current_date: str | None = None
+    days: dict[str, list[dict[str, str]]] = {}
+    last_msg: dict[str, str] | None = None
+
+    for line in lines:
+        line = line.rstrip()
+
+        date_m = _DESKTOP_DATE_RE.match(line)
+        if date_m:
+            current_date = _parse_kr_date(date_m.group(1))
+            last_msg = None
+            continue
+
+        if current_date is None:
+            continue
+
+        msg_m = _DESKTOP_MSG_RE.match(line)
+        if msg_m:
+            raw_sender = msg_m.group(1)
+            time_str = _parse_kr_time(msg_m.group(2), msg_m.group(3))
+            text_body = msg_m.group(4)
+            sender = nickname_map.get(raw_sender, raw_sender)
+            msg = {"sender": sender, "time": time_str, "text": text_body}
+            days.setdefault(current_date, []).append(msg)
+            last_msg = msg
+            continue
+
+        if line and last_msg is not None:
+            last_msg["text"] += "\n" + line
+
+    return days
+
+
+def _parse_mobile(lines: list[str], nickname_map: dict[str, str]) -> dict[str, list[dict[str, str]]]:
+    """Parse mobile format lines into {date: [messages]}."""
+    current_date: str | None = None
+    days: dict[str, list[dict[str, str]]] = {}
+    last_msg: dict[str, str] | None = None
+
+    for line in lines:
+        line = line.rstrip()
+
+        # Date line: "2023년 2월 8일 수요일"
+        date_m = _MOBILE_DATE_RE.match(line)
+        if date_m:
+            y, mo, d = date_m.group(1), date_m.group(2), date_m.group(3)
+            current_date = f"{y}-{int(mo):02d}-{int(d):02d}"
+            last_msg = None
+            continue
+
+        if current_date is None:
+            continue
+
+        # Message: "2023. 2. 8. 오전 11:16, 송현아 : 안녕하세요"
+        msg_m = _MOBILE_MSG_RE.match(line)
+        if msg_m:
+            ampm = msg_m.group(4)
+            hour = int(msg_m.group(5))
+            minute = msg_m.group(6)
+            if ampm == "오후" and hour != 12:
+                hour += 12
+            elif ampm == "오전" and hour == 12:
+                hour = 0
+            time_str = f"{hour:02d}:{minute}"
+
+            raw_sender = msg_m.group(7)
+            text_body = msg_m.group(8)
+            sender = nickname_map.get(raw_sender, raw_sender)
+            msg = {"sender": sender, "time": time_str, "text": text_body}
+            days.setdefault(current_date, []).append(msg)
+            last_msg = msg
+            continue
+
+        # System messages (삭제, 입장 등) — skip but break continuation
+        if line and not line.startswith(" ") and "," in line and ("님이" in line or "삭제" in line):
+            last_msg = None
+            continue
+
+        # Continuation line
+        if line and last_msg is not None:
+            last_msg["text"] += "\n" + line
+
+    return days
+
+
+def parse_kakao_txt(path: Path) -> list[dict[str, Any]]:
+    """Parse a KakaoTalk export .txt file (desktop or mobile format).
+
+    Returns a list of day-grouped dicts:
+    [{"room": str, "date": str, "messages": [{"sender": str, "time": str, "text": str}]}]
     """
-    payload = f"{title}\x00{text}\x00{timestamp_ms}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    raw_bytes = path.read_bytes()
+    # Strip BOM if present
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        raw_bytes = raw_bytes[3:]
+    text = raw_bytes.decode("utf-8")
+    text = unicodedata.normalize("NFC", text)
+    lines = text.splitlines()
+
+    if not lines:
+        return []
+
+    room_name = _extract_room_name(lines, path)
+
+    settings = get_settings()
+    nickname_map = settings.kakao.nickname_to_name
+
+    fmt = _detect_format(lines)
+    if fmt == "desktop":
+        days = _parse_desktop(lines, nickname_map)
+    elif fmt == "mobile":
+        days = _parse_mobile(lines, nickname_map)
+    else:
+        logger.warning("kakao.unknown_format", path=str(path))
+        return []
+
+    logger.info("kakao.parsed", path=path.name, format=fmt, room=room_name, days=len(days))
+
+    results = []
+    for date_str in sorted(days.keys()):
+        messages = days[date_str]
+        if messages:
+            results.append({"room": room_name, "date": date_str, "messages": messages})
+    return results
 
 
-def _parse_notification(notification: dict, ignore_rooms: set[str] | None = None) -> ConnectorResult | None:
-    """Convert a single Android notification dict to a ConnectorResult.
+def _format_messages(messages: list[dict[str, str]]) -> str:
+    """Format parsed messages into readable text."""
+    lines = []
+    for msg in messages:
+        lines.append(f"[{msg['time']}] {msg['sender']}: {msg['text']}")
+    return "\n".join(lines)
 
-    Returns None if the notification cannot be parsed, has no text body,
-    or belongs to an ignored room.
-    """
-    tz = _get_tz()
 
-    package: str = notification.get("package", "")
-    app = PACKAGE_TO_APP.get(package, "unknown")
+def _participants(messages: list[dict[str, str]]) -> list[str]:
+    """Extract unique participants in order of appearance."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for msg in messages:
+        s = msg["sender"]
+        if s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result
 
-    title: str = notification.get("title", "").strip()
-    text: str = notification.get("text", "").strip()
-    timestamp_ms: int = int(notification.get("timestamp", 0))
-    extras: dict = notification.get("extras", {})
 
-    if not text:
-        logger.debug("Skipping notification with empty text: title=%r", title)
-        return None
+class _TxtHandler(FileSystemEventHandler):
+    """Watchdog handler that pushes new .txt KakaoTalk exports to the engine queue."""
 
-    # Resolve timestamp — fall back to now if missing / zero.
-    if timestamp_ms:
+    def __init__(self, queue: asyncio.Queue[dict[str, Any]], loop: asyncio.AbstractEventLoop) -> None:
+        self._queue = queue
+        self._loop = loop
+
+    def on_created(self, event: FileCreatedEvent) -> None:  # type: ignore[override]
+        if event.is_directory:
+            return
+        path = Path(event.src_path)
+        if path.suffix.lower() != ".txt":
+            return
+        asyncio.run_coroutine_threadsafe(self._handle_file(path), self._loop)
+
+    async def _handle_file(self, path: Path) -> None:
+        await asyncio.sleep(2.0)  # stability delay
+        if not path.exists():
+            return
         try:
-            ts = datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
-        except (ValueError, OSError):
-            logger.warning("Invalid timestamp %d, using now", timestamp_ms)
-            ts = datetime.now(tz=tz)
-    else:
-        ts = datetime.now(tz=tz)
+            await _process_export_file(path, self._queue)
+        except Exception:
+            logger.exception("kakao.parse_failed", path=str(path))
 
-    # App-specific room/sender parsing
-    sub_text: str = extras.get("android.subText", "").strip()
 
-    if app == "kakao":
-        is_group = bool(sub_text)
-        if is_group:
-            room_name = sub_text
-            raw_sender = title
-        else:
-            room_name = title
-            raw_sender = title
-    elif app == "slack":
-        # Slack: title = "#channel" or "DM with Name", subText = workspace
-        is_group = title.startswith("#")
-        room_name = title
-        raw_sender = sub_text or title
-    elif app == "telegram":
-        # Telegram: title = chat/group name, subText = sender in groups
-        is_group = bool(sub_text)
-        if is_group:
-            room_name = title
-            raw_sender = sub_text
-        else:
-            room_name = title
-            raw_sender = title
-    elif app == "instagram":
-        # Instagram DM: title = sender name
-        is_group = bool(sub_text)
-        room_name = sub_text if is_group else title
-        raw_sender = title
-    else:
-        is_group = bool(sub_text)
-        room_name = sub_text if is_group else title
-        raw_sender = title
+async def _process_export_file(
+    path: Path, queue: asyncio.Queue[dict[str, Any]]
+) -> None:
+    """Parse a KakaoTalk export file and emit events."""
+    settings = get_settings()
+    tz = ZoneInfo(settings.general.timezone)
 
-    # Filter ignored rooms
-    if ignore_rooms and room_name in ignore_rooms:
-        logger.debug("Ignoring room %r (in ignore list)", room_name)
-        return None
+    days = await asyncio.to_thread(parse_kakao_txt, path)
+    if not days:
+        logger.warning("kakao.empty_export", path=str(path))
+        return
 
-    # Prefer the full message body when available.
-    big_text: str = extras.get("android.bigText", "").strip()
-    content = big_text if big_text else text
+    exclude = set(settings.kakao.exclude_rooms)
 
-    msg_hash = _message_hash(title, text, timestamp_ms)
-    source_id = f"{app}_{msg_hash}"
+    for day in days:
+        room = day["room"]
+        if room in exclude:
+            continue
+        date_str = day["date"]
+        messages = day["messages"]
+        if not messages:
+            continue
 
-    return ConnectorResult(
-        source_id=source_id,
-        source_type="message",
-        connector_name=app,
-        timestamp=ts,
-        title=room_name,
-        content=content,
-        participants=[],
-        metadata={
-            "app": app,
-            "room": room_name,
-            "is_group": is_group,
-            "raw_sender": raw_sender,
-        },
-        raw=notification,
+        raw_content = f"[카카오톡] {room} — {date_str}\n\n" + _format_messages(messages)
+        event_id = f"kakao:{room}:{date_str}"
+
+        event_dict: dict[str, Any] = {
+            "id": event_id,
+            "source": SourceType.KAKAO.value,
+            "content_type": ContentType.MESSAGE.value,
+            "raw_content": raw_content,
+            "timestamp": datetime.strptime(date_str, "%Y-%m-%d")
+            .replace(tzinfo=tz)
+            .isoformat(),
+            "metadata": {
+                "room": room,
+                "participants": _participants(messages),
+                "message_count": len(messages),
+                "export_file": path.name,
+            },
+        }
+
+        await queue.put(event_dict)
+        logger.info("kakao.emitted", room=room, date=date_str, messages=len(messages))
+
+
+# ---------- kakaocli DB polling ----------
+
+import json
+import shutil
+import subprocess
+
+
+def _find_kakaocli() -> str | None:
+    """Find the kakaocli binary."""
+    return shutil.which("kakaocli")
+
+
+def _kakaocli_db_args() -> list[str]:
+    """Build --db and --key args from Keychain secrets."""
+    from onlime.security.secrets import get_secret_or_env
+
+    user_id = get_secret_or_env("kakao-user-id", "KAKAO_USER_ID")
+    db_key = get_secret_or_env("kakao-db-key", "KAKAO_DB_KEY")
+    if not user_id or not db_key:
+        raise RuntimeError("kakao-user-id or kakao-db-key not found in Keychain")
+
+    # Derive DB path from user ID + UUID
+    import hashlib, base64
+
+    uuid_bytes = subprocess.check_output(
+        ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], text=True,
     )
+    import re as _re
+    uuid_m = _re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', uuid_bytes)
+    if not uuid_m:
+        raise RuntimeError("Could not read IOPlatformUUID")
+    uuid = uuid_m.group(1)
+
+    # databaseName derivation (matches KeyDerivation.swift)
+    data = uuid.encode("utf-8")
+    sha1 = hashlib.sha1(data).digest()
+    sha256 = hashlib.sha256(data).digest()
+    hashed = base64.b64encode(sha1 + sha256).decode()
+
+    hawawa = ".".join([".", "F", user_id, "A", "F", uuid[::-1], ".", "|"])
+    salt = hashed[::-1]
+    derived = hashlib.pbkdf2_hmac("sha256", hawawa.encode(), salt.encode(), 100000, dklen=128)
+    db_name = derived.hex()[28:28 + 78]
+
+    container = Path.home() / "Library/Containers/com.kakao.KakaoTalkMac/Data/Library/Application Support/com.kakao.KakaoTalkMac"
+    db_path = container / db_name
+
+    if not db_path.exists():
+        raise RuntimeError(f"KakaoTalk DB not found: {db_path}")
+
+    return ["--db", str(db_path), "--key", db_key]
+
+
+async def _kakaocli_chats(binary: str, db_args: list[str]) -> list[dict[str, Any]]:
+    """Get chat list via kakaocli."""
+    cmd = [binary, "chats", "--limit", "100", "--json"] + db_args
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"kakaocli chats failed: {stderr.decode()}")
+    return json.loads(stdout.decode())
+
+
+async def _kakaocli_messages(
+    binary: str, db_args: list[str], chat_name: str, since_days: int,
+) -> list[dict[str, Any]]:
+    """Get messages for a chat via kakaocli."""
+    cmd = [
+        binary, "messages",
+        "--chat", chat_name,
+        "--since", f"{since_days}d",
+        "--json",
+    ] + db_args
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("kakao.cli_messages_failed", chat=chat_name, err=stderr.decode()[:200])
+        return []
+    return json.loads(stdout.decode())
+
+
+def _group_messages_by_date(
+    messages: list[dict[str, Any]], tz: ZoneInfo,
+) -> dict[str, list[dict[str, str]]]:
+    """Group kakaocli JSON messages by date."""
+    by_date: dict[str, list[tuple[str, dict[str, str]]]] = {}
+    for msg in messages:
+        if msg.get("type") == "system":
+            continue
+        text = msg.get("text", "")
+        if not text:
+            continue
+        ts_str = msg.get("timestamp", "")
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).astimezone(tz)
+        except (ValueError, TypeError):
+            continue
+        date_str = dt.strftime("%Y-%m-%d")
+        time_str = dt.strftime("%H:%M")
+        sender = msg.get("sender", "?")
+        entry = {"sender": sender, "time": time_str, "text": text}
+        by_date.setdefault(date_str, []).append((ts_str, entry))
+
+    # Sort each day by timestamp
+    result: dict[str, list[dict[str, str]]] = {}
+    for date_str in sorted(by_date.keys()):
+        entries = sorted(by_date[date_str], key=lambda x: x[0])
+        result[date_str] = [e for _, e in entries]
+    return result
+
+
+# ---------- connector ----------
 
 
 @register
 class KakaoConnector(BaseConnector):
-    """Connector for KakaoTalk notifications pushed from Android via Termux."""
+    """KakaoTalk connector: kakaocli DB polling (preferred) or .txt watcher (fallback)."""
 
     name = "kakao"
 
     def __init__(self) -> None:
-        # In-memory store for notifications delivered via ingest().
-        self._messages: list[dict] = []
-        self._seen_ids: set[str] = set()
-        self._lock = Lock()
+        self._observer: Observer | None = None
+        self._queue: asyncio.Queue[dict[str, Any]] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
+        self._mode: str = "none"  # "kakaocli" or "txt"
 
-        # Nickname → real name mapping.  Populated from config; can also be
-        # patched directly for tests or runtime reconfiguration.
+    def fetch(self, **kwargs: Any) -> list:
+        return []
+
+    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         settings = get_settings()
-        self.nickname_to_name: dict[str, str] = {}
+        self._queue = queue
 
-        # Seed from known_contacts list: treat each entry as both key and
-        # value so that real names pass through unchanged.
-        for contact in settings.names.known_contacts:
-            self.nickname_to_name[contact] = contact
-
-        # Apply explicit nickname → real name mappings from [kakao.nickname_to_name].
-        self.nickname_to_name.update(settings.kakao.nickname_to_name)
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
-    def ingest(self, notifications: list[dict]) -> int:
-        """Receive pushed notification dicts and store new ones.
-
-        Accepts notifications from all configured messaging apps.
-        Duplicates are silently dropped.  Returns the count of newly stored messages.
-
-        Safety: evicts oldest entries when internal stores exceed size limits
-        to prevent unbounded memory growth.
-        """
-        settings = get_settings()
-        allowed_packages = set(settings.messaging.apps)
-
-        added = 0
-        with self._lock:
-            for n in notifications:
-                pkg = n.get("package", "")
-                if pkg not in allowed_packages:
-                    logger.debug(
-                        "Ignoring notification from non-configured app: package=%r",
-                        pkg,
+        # Try kakaocli mode first
+        if settings.kakao.use_kakaocli:
+            binary = _find_kakaocli()
+            if binary:
+                try:
+                    db_args = await asyncio.to_thread(_kakaocli_db_args)
+                    # Quick test: list chats
+                    chats = await _kakaocli_chats(binary, db_args)
+                    self._mode = "kakaocli"
+                    self._poll_task = asyncio.create_task(
+                        self._kakaocli_poll_loop(binary, db_args)
                     )
-                    continue
+                    logger.info("kakao.started", mode="kakaocli", chats=len(chats))
+                    return
+                except Exception as exc:
+                    logger.warning("kakao.kakaocli_init_failed", error=str(exc))
 
-                title = n.get("title", "").strip()
-                text = n.get("text", "").strip()
-                ts_ms = int(n.get("timestamp", 0))
-                msg_id = _message_hash(title, text, ts_ms)
+        # Fallback: .txt watcher
+        if settings.kakao.export_dir:
+            export_dir = Path(settings.kakao.export_dir).expanduser()
+            if not export_dir.exists():
+                export_dir.mkdir(parents=True, exist_ok=True)
+            loop = asyncio.get_running_loop()
+            handler = _TxtHandler(queue, loop)
+            self._observer = Observer()
+            self._observer.schedule(handler, str(export_dir), recursive=True)
+            self._observer.start()
+            await self._initial_scan(export_dir)
+            self._mode = "txt"
+            logger.info("kakao.started", mode="txt", export_dir=str(export_dir))
+        else:
+            logger.warning("kakao.no_mode_available")
 
-                if msg_id in self._seen_ids:
-                    logger.debug("Duplicate notification dropped: id=%s", msg_id)
-                    continue
+    async def _initial_scan(self, export_dir: Path) -> None:
+        count = 0
+        for path in sorted(export_dir.rglob("*.txt")):
+            try:
+                await _process_export_file(path, self._queue)
+                count += 1
+            except Exception:
+                logger.exception("kakao.initial_scan_failed", path=str(path))
+        if count:
+            logger.info("kakao.initial_scan", files=count)
 
-                self._seen_ids.add(msg_id)
-                self._messages.append(n)
-                added += 1
-
-            # Evict oldest entries if stores exceed safety limits.
-            if len(self._messages) > _MAX_STORED_MESSAGES:
-                overflow = len(self._messages) - _MAX_STORED_MESSAGES
-                self._messages = self._messages[overflow:]
-                logger.warning(
-                    "Message store exceeded %d limit, evicted %d oldest entries",
-                    _MAX_STORED_MESSAGES,
-                    overflow,
-                )
-            if len(self._seen_ids) > _MAX_SEEN_IDS:
-                # Clear and rebuild from current messages to keep memory bounded.
-                self._seen_ids.clear()
-                for m in self._messages:
-                    t = m.get("title", "").strip()
-                    tx = m.get("text", "").strip()
-                    ts = int(m.get("timestamp", 0))
-                    self._seen_ids.add(_message_hash(t, tx, ts))
-                logger.warning(
-                    "Seen-ID set exceeded %d limit, rebuilt from %d stored messages",
-                    _MAX_SEEN_IDS,
-                    len(self._messages),
-                )
-
-        logger.info("ingest: accepted %d / %d notifications", added, len(notifications))
-        return added
-
-    def resolve_sender(self, nickname: str) -> str:
-        """Map a KakaoTalk display name to a canonical real name.
-
-        Uses NameResolver which auto-matches against:
-        - contacts.csv (Google 연락처)
-        - Obsidian People 폴더
-        - onlime.toml 설정 (email_to_name, known_contacts)
-        - [kakao.nickname_to_name] 수동 매핑 (최우선)
-
-        Matching: 정확 매칭 → 존칭 제거 → 이름(성 제외) 매칭 → 부분 매칭
-        """
-        from onlime.names_resolver import get_resolver
-        return get_resolver().resolve(nickname)
-
-    def fetch(self, **kwargs) -> list[ConnectorResult]:
-        """Return ConnectorResult objects for all ingested messages.
-
-        The internal store is NOT cleared on fetch so that multiple consumers
-        (e.g. the engine and an ad-hoc CLI call) both see the full history.
-        Deduplication is handled at ingest time.
-        """
-        with self._lock:
-            snapshot = list(self._messages)
-
+    async def _kakaocli_poll_loop(self, binary: str, db_args: list[str]) -> None:
+        """Poll kakaocli for new messages periodically."""
         settings = get_settings()
-        ignore_rooms = set(settings.messaging.ignore_rooms)
+        tz = ZoneInfo(settings.general.timezone)
+        poll_seconds = settings.kakao.poll_interval_minutes * 60
+        exclude = set(settings.kakao.exclude_rooms)
+        nickname_map = settings.kakao.nickname_to_name
 
-        results: list[ConnectorResult] = []
-        for notification in snapshot:
-            result = _parse_notification(notification, ignore_rooms=ignore_rooms)
-            if result is None:
+        first_run = True
+        while True:
+            try:
+                days_back = settings.kakao.sync_days_back if first_run else 1
+                await self._kakaocli_poll_once(binary, db_args, tz, days_back, exclude, nickname_map)
+                first_run = False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("kakao.poll_failed")
+
+            await asyncio.sleep(poll_seconds)
+
+    async def _kakaocli_poll_once(
+        self,
+        binary: str,
+        db_args: list[str],
+        tz: ZoneInfo,
+        days_back: int,
+        exclude: set[str],
+        nickname_map: dict[str, str],
+    ) -> None:
+        chats = await _kakaocli_chats(binary, db_args)
+        logger.info("kakao.poll", chats=len(chats))
+
+        for chat in chats:
+            chat_name = chat.get("display_name") or "(unknown)"
+            if chat_name in exclude or chat_name == "(unknown)":
                 continue
 
-            # Resolve the raw sender to a canonical name and attach as
-            # the sole participant.
-            raw_sender = result.metadata.get("raw_sender", "")
-            resolved = self.resolve_sender(raw_sender)
-            result.participants = [resolved]
+            messages = await _kakaocli_messages(binary, db_args, chat_name, days_back)
+            if not messages:
+                continue
 
-            results.append(result)
+            by_date = _group_messages_by_date(messages, tz)
 
-        logger.info("fetch: returning %d messages", len(results))
-        return results
+            for date_str, day_msgs in by_date.items():
+                # Apply nickname mapping
+                for m in day_msgs:
+                    m["sender"] = nickname_map.get(m["sender"], m["sender"])
+
+                raw_content = f"[카카오톡] {chat_name} — {date_str}\n\n" + _format_messages(day_msgs)
+                event_id = f"kakao:{chat_name}:{date_str}"
+
+                event_dict: dict[str, Any] = {
+                    "id": event_id,
+                    "source": SourceType.KAKAO.value,
+                    "content_type": ContentType.MESSAGE.value,
+                    "raw_content": raw_content,
+                    "timestamp": datetime.strptime(date_str, "%Y-%m-%d")
+                    .replace(tzinfo=tz)
+                    .isoformat(),
+                    "metadata": {
+                        "room": chat_name,
+                        "participants": _participants(day_msgs),
+                        "message_count": len(day_msgs),
+                        "source_mode": "kakaocli",
+                    },
+                }
+
+                await self.emit(event_dict, self._queue)
+
+            logger.info("kakao.chat_done", chat=chat_name, days=len(by_date))
+            await asyncio.sleep(0.5)
+
+    async def stop(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        if self._observer:
+            self._observer.stop()
+            self._observer.join(timeout=5)
+        logger.info("kakao.stopped", mode=self._mode)
 
     def is_available(self) -> bool:
-        """KakaoTalk connector is always available; it needs no external creds."""
-        return True
+        settings = get_settings()
+        return bool(settings.kakao.enabled)

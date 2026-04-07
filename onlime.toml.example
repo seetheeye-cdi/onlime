@@ -1,72 +1,95 @@
-# Onlime 설정 파일
-# 환경변수로 오버라이드 가능: ONLIME_VAULT_ROOT, ONLIME_TIMEZONE 등
+# Onlime Configuration
+# Copy to onlime.toml and customize.
 
 [vault]
-root = "/Users/cdiseetheeye/Documents/Obsidian_sinc"
-meeting_dir = "1. INPUT/Meeting"
-daily_dir = "2. OUTPUT/Daily"
-inbox_dir = "1. INPUT/Inbox"
-people_dir = "1. INPUT/People"
-entity_dir = "1. Input"
-entity_watchlist = ["세바시", "토스", "더존바이오", "흑백요리사"]
+root = "~/Documents/Obsidian/Onlime"
 
 [state]
-dir = "~/.config/onlime"
-
-[gcal]
-calendar_ids = ["primary", "seetheeye@chamchi.kr"]
-sync_days_back = 7
-sync_days_forward = 14
-
-[plaud]
-api_base = "https://api-apne1.plaud.ai"
+dir = "~/.onlime"
 
 [general]
 timezone = "Asia/Seoul"
-min_overlap_ratio = 0.3
+log_level = "INFO"
 
 [kakao]
-# 카카오톡 닉네임 → 실명 매핑
+enabled = true
+use_kakaocli = true                       # kakaocli DB polling (preferred)
+poll_interval_minutes = 30
+sync_days_back = 7
+export_dir = "~/Desktop/kakao-exports"    # .txt fallback folder
+schedule_hours = 6
+exclude_rooms = []
+
 [kakao.nickname_to_name]
 # "카톡닉네임" = "실명"
-# 예: "동인이" = "최동인"
 
 [slack]
-bot_token = ""
-sync_channels = []      # 비어있으면 joined 채널 전부
-sync_days_back = 3650
-
-[telegram]
-api_id = 0
-api_hash = ""
-phone = ""
-session_dir = "~/.config/onlime"
-sync_chats = []         # 비어있으면 최근 대화 전부
-sync_days_back = 3650
-
-[recording_sync]
 enabled = false
-watch_dir = "~/Recordings/synced"
-extensions = [".m4a", ".wav", ".mp3", ".ogg", ".3gp", ".amr"]
-auto_note = true   # 새 녹음 감지 시 자동 Obsidian 노트 생성
+sync_channels = []          # empty = all joined channels
+sync_days_back = 7
+poll_interval_minutes = 30
 
-[messaging]
-# 수집할 앱 패키지 목록
-apps = ["com.kakao.talk", "com.Slack", "org.telegram.messenger", "com.instagram.android"]
-# 무시할 채팅방 이름 (오픈채팅방 등)
-ignore_rooms = []
+[telegram_bot]
+enabled = true
+allowed_user_ids = []
+assistant_model = "claude"
+
+[gdrive]
+enabled = true
+watch_paths = [
+    "~/Library/CloudStorage/GoogleDrive-user@gmail.com/My Drive/Recordings",
+]
+
+[gcal]
+enabled = true
+calendar_ids = ["primary"]
+schedule_minutes = 15
+
+[web]
+enabled = true
+summary_model = "claude"
+
+[stt]
+model = "large-v3-turbo"
+compute_type = "int8"
+device = "cpu"
+language = "ko"
+
+[llm]
+providers = ["claude", "ollama"]
+daily_token_limit = 1_200_000
+
+[llm.claude]
+model = "claude-sonnet-4-6"
+
+[llm.ollama]
+model = "gemma2:9b"
+base_url = "http://localhost:11434"
+
+[search]
+db_path = "~/.onlime/lancedb"
+embedding_model = "BAAI/bge-m3"
+
+[routing.routes]
+"#aip" = "70-projects/borromeo"
+"#borromeo" = "70-projects/borromeo"
+"#boromeo" = "70-projects/borromeo"
+"#chamchi" = "70-projects/chamchi"
+"#thehackathon" = "70-projects/hackathon"
+"#nextnobel" = "70-projects/next_nobel"
+"#philosophy" = "70-projects/philosophy"
+
+[scheduler]
+enabled = true
+morning_brief_hour = 8
+daily_summary_hour = 23
+
+[server]
+host = "127.0.0.1"
+port = 8000
 
 [names]
-# 이메일 매핑에 없는 외부 미팅 참가자 (실제 만나는 사람만)
-known_contacts = ["이준석", "이경주", "우수한", "이보영", "김석기", "양승현", "김소희", "박하나", "강준서", "조용민"]
+known_contacts = []
 
-# 이메일 → 옵시디언 이름 매핑
 [names.email_to_name]
-"seetheeye@chamchi.kr" = "최동인"
-"jh.shim@chamchi.kr" = "심정혁"
-"uk.young@chamchi.kr" = "김욱영"
-"wnsqud70@chamchi.kr" = "김민재_참치개발자"
-"yunu.cho@chamchi.kr" = "조연우"
-"joonho.yoon@chamchi.kr" = "윤준호"
-"sungjin.jeon@chamchi.kr" = "전성진"
-"seyeong.choe@chamchi.kr" = "최세영"
+# "user@example.com" = "홍길동"

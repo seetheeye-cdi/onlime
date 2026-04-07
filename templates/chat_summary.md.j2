@@ -1,0 +1,19 @@
+# {{ event.title }}
+
+{% if event.summary %}
+## 요약
+
+{{ event.summary }}
+
+{% endif %}
+{% if event.people %}
+## 참여자
+
+{% for person in event.people %}
+- [[{{ person }}]]
+{% endfor %}
+
+{% endif %}
+## 대화 원문
+
+{{ event.full_text }}

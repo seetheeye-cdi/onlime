@@ -4,34 +4,77 @@ build-backend = "hatchling.build"
 
 [project]
 name = "onlime"
-version = "0.1.0"
-description = "Personal AI workflow system: collect data from multiple sources, process with AI, and organize in Obsidian"
-requires-python = ">=3.11"
+version = "2.0.0"
+description = "Personal AI Second Brain: collect, process, and organize in Obsidian"
+requires-python = ">=3.12"
 dependencies = [
+    # Core
     "click>=8.1",
     "pydantic>=2.0",
-    "httpx>=0.28.0",
-    "google-api-python-client>=2.100.0",
-    "google-auth-oauthlib>=1.2.0",
+    "pydantic-settings>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "aiosqlite>=0.20",
+    "structlog>=24.0",
+    "httpx>=0.27",
     "pyyaml>=6.0",
     "jinja2>=3.1",
-    "tomli>=2.0; python_version < '3.12'",
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "websockets>=12.0",
-    "slack-sdk>=3.23",
-    "pyrogram>=2.0",
-    "tgcrypto>=1.2",
+    "python-slugify>=8.0",
+
+    # Telegram
+    "python-telegram-bot>=21.0",
+
+    # Slack
+    "slack-sdk>=3.27",
+
+    # Google API
+    "google-api-python-client>=2.100",
+    "google-auth-oauthlib>=1.2",
+
+    # File watching
+    "watchdog>=4.0",
+
+    # Web scraping
+    "trafilatura>=1.8",
+    "readability-lxml>=0.8",
+    "youtube-transcript-api>=0.6",
+    "yt-dlp>=2024.0",
+    "pdfminer.six>=20231228",
+    "firecrawl-py>=4.0",
+
+    # LLM
+    "anthropic>=0.30",
+
+    # STT
+    "faster-whisper>=1.0",
+
+    # RAG
+    "sentence-transformers>=3.0",
+    "lancedb>=0.6",
 ]
 
 [project.optional-dependencies]
+diarization = [
+    "pyannote.audio>=3.1",
+    "torch>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
 ]
+
 [project.scripts]
 onlime = "onlime.cli:cli"
-onlime-server = "onlime.api.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onlime"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

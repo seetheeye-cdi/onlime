@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>철학모임 — 같이 읽읍시다</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --black: #111;
+      --gray-dark: #333;
+      --gray-mid: #666;
+      --gray-light: #999;
+      --gray-border: #e0e0e0;
+      --bg: #fafafa;
+      --white: #fff;
+    }
+
+    html { font-size: 17px; scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Noto Serif KR', 'Georgia', serif;
+      color: var(--black);
+      background: var(--bg);
+      line-height: 1.85;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 28px 48px;
+      background: rgba(250,250,250,0.92);
+      backdrop-filter: blur(12px);
+      z-index: 100;
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.3s;
+    }
+    nav.scrolled { border-bottom-color: var(--gray-border); }
+
+    .nav-logo {
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+      font-size: 0.85rem;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 36px;
+      list-style: none;
+    }
+    .nav-links a {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 400;
+      color: var(--gray-mid);
+      text-decoration: none;
+      transition: color 0.2s;
+      letter-spacing: 0.01em;
+    }
+    .nav-links a:hover { color: var(--black); }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 160px 48px 120px;
+      max-width: 860px;
+    }
+
+    .hero-symbol {
+      width: 72px;
+      height: 72px;
+      margin-bottom: 64px;
+      opacity: 0.85;
+    }
+    .hero-symbol svg { width: 100%; height: 100%; }
+
+    .hero h1 {
+      font-size: 1.55rem;
+      font-weight: 700;
+      line-height: 1.65;
+      margin-bottom: 40px;
+      letter-spacing: -0.01em;
+    }
+
+    .hero-body {
+      font-size: 1rem;
+      line-height: 2;
+      color: var(--gray-dark);
+      max-width: 680px;
+    }
+
+    /* ── SECTIONS ── */
+    section {
+      padding: 120px 48px;
+      max-width: 860px;
+    }
+
+    .section-num {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--black);
+      margin-bottom: 6px;
+    }
+
+    .section-title-en {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 400;
+      color: var(--gray-light);
+      letter-spacing: 0.02em;
+      margin-bottom: 4px;
+    }
+
+    .section-title-ko {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 36px;
+      letter-spacing: -0.02em;
+    }
+
+    .section-body {
+      font-size: 1rem;
+      line-height: 2;
+      color: var(--gray-dark);
+      max-width: 680px;
+    }
+
+    .section-body p + p {
+      margin-top: 28px;
+    }
+
+    /* ── QUOTE ── */
+    .quote-block {
+      border-left: 2px solid var(--black);
+      padding: 24px 0 24px 32px;
+      margin: 48px 0;
+      max-width: 640px;
+    }
+    .quote-block p {
+      font-size: 1.05rem;
+      font-style: italic;
+      line-height: 1.9;
+      color: var(--gray-dark);
+    }
+    .quote-block .quote-attr {
+      font-style: normal;
+      font-size: 0.85rem;
+      color: var(--gray-light);
+      margin-top: 12px;
+    }
+
+    /* ── DETAILS LIST ── */
+    .details-grid {
+      margin-top: 48px;
+      display: grid;
+      gap: 32px;
+    }
+
+    .detail-item {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 16px;
+      align-items: baseline;
+    }
+
+    .detail-label {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--gray-light);
+      letter-spacing: 0.02em;
+    }
+
+    .detail-value {
+      font-size: 0.95rem;
+      color: var(--gray-dark);
+      line-height: 1.7;
+    }
+
+    /* ── FORM ── */
+    .form-section {
+      padding: 120px 48px;
+      max-width: 860px;
+    }
+
+    .apply-form {
+      margin-top: 48px;
+      max-width: 520px;
+    }
+
+    .form-group {
+      margin-bottom: 32px;
+    }
+
+    .form-group label {
+      display: block;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--gray-light);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .form-group input,
+    .form-group textarea {
+      width: 100%;
+      padding: 14px 0;
+      font-family: 'Noto Serif KR', serif;
+      font-size: 1rem;
+      color: var(--black);
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--gray-border);
+      outline: none;
+      transition: border-color 0.2s;
+      line-height: 1.6;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus {
+      border-bottom-color: var(--black);
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .submit-btn {
+      display: inline-block;
+      padding: 16px 48px;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      color: var(--white);
+      background: var(--black);
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      margin-top: 16px;
+    }
+    .submit-btn:hover { opacity: 0.8; }
+
+    .form-success {
+      display: none;
+      padding: 32px 0;
+    }
+    .form-success h3 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .form-success p {
+      font-size: 0.95rem;
+      color: var(--gray-mid);
+      line-height: 1.8;
+    }
+
+    /* ── DIVIDER ── */
+    .divider {
+      width: 48px;
+      height: 1px;
+      background: var(--gray-border);
+      margin: 0 48px;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      padding: 64px 48px;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.75rem;
+      color: var(--gray-light);
+      line-height: 1.8;
+      border-top: 1px solid var(--gray-border);
+      max-width: 860px;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 768px) {
+      html { font-size: 16px; }
+      nav { padding: 20px 24px; }
+      .nav-links { gap: 20px; }
+      .hero { padding: 140px 24px 80px; }
+      section, .form-section { padding: 80px 24px; }
+      .divider { margin: 0 24px; }
+      footer { padding: 48px 24px; }
+      .detail-item {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+      .hero h1 { font-size: 1.3rem; }
+    }
+
+    /* ── ANIMATION ── */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="nav-logo">철학<br>강독회</div>
+  <ul class="nav-links">
+    <li><a href="#intro">소개</a></li>
+    <li><a href="#about">모임</a></li>
+    <li><a href="#join">참여</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="hero-symbol">
+    <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="28" cy="36" r="18" stroke="#111" stroke-width="2" fill="none"/>
+      <circle cx="44" cy="36" r="18" stroke="#111" stroke-width="2" fill="none"/>
+      <line x1="36" y1="14" x2="36" y2="58" stroke="#111" stroke-width="1.2" opacity="0.3"/>
+    </svg>
+  </div>
+  <h1>
+    커피 한잔하며<br>무용하게 빈둥거리다가,<br>
+    문득 철학 모임을 해보고 싶어졌습니다.
+  </h1>
+  <p class="hero-body">
+    그냥 쓸데없는 재밌는 대화가 하고 싶어서요.
+    같이 책 읽고, 아무 말이나 하고, 커피나 술 한잔 하는 그런 자리.
+  </p>
+</header>
+
+<div class="divider"></div>
+
+<!-- SECTION 1: 자기소개 -->
+<section id="intro" class="fade-in">
+  <div class="section-num">1</div>
+  <div class="section-title-en">Who Am I</div>
+  <div class="section-title-ko">비루한 자기소개</div>
+  <div class="section-body">
+    <p>
+      유치원 시절, 법조인 아버님께 천자문, 사서삼경과 바둑을,
+      동양화가 어머님께 서예와 미학을 싸리나무 회초리 맞아가며 배웠습니다.
+    </p>
+    <p>
+      초·중학교 시절, 독일로 갑자기 끌려갔는데,
+      하이데거, 비트겐슈타인, 칸트, 프로이트, 니체의 글을 읽으며 논리와 말하기를 배웠습니다.
+      보석세공과 시계제작의 길을 꿈꾸었으나, 한국으로 돌아오며 포기하게 되었습니다.
+    </p>
+    <p>
+      고등학교 시절에는 사회주의자 담임 선생님을 2-3학년 내내 만나며
+      헤겔과 맑스, 모택동의 논문을 탐독했습니다.
+      그러다 대학에서 정치학을 공부하고자 했으나,
+      면접에서 신유물사회주의를 주창하다 모조리 광탈하고 반수했습니다. (지금은 아닙니다)
+    </p>
+    <p>
+      그러고 얌전히 변호사나 하려고 생각하다,
+      욱영님을 만나 창업의 길로 접어들었습니다.
+      돈놀이하며 재미를 보다가,
+      지금은 참치상사라는 정치테크 스타트업을 2년째 운영 중입니다.
+    </p>
+    <p>
+      최근에는 세계에 수출할 수 있는 에이전틱 정부 시스템을 만들고자 이런저런 시도를 해보고 있습니다.
+    </p>
+
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- SECTION 2: 모임 -->
+<section id="about" class="fade-in">
+  <div class="section-num">2</div>
+  <div class="section-title-en">Reading Group</div>
+  <div class="section-title-ko">강독회</div>
+  <div class="section-body">
+    <p>
+      거창한 건 없습니다. 같이 책 읽고, 떠들고, 각자 해석하는 자리입니다.
+      안 읽어와도 됩니다. 같이 한 줄씩 읽으면서 얘기 나누는 겁니다.
+      문장논리의 밀도가 높은 책을 읽을 겁니다.
+    </p>
+    <p>
+      한번 오고 재미없으면 다음부터 말없이 안 나와도 됩니다.
+    </p>
+  </div>
+
+  <div class="details-grid">
+    <div class="detail-item">
+      <div class="detail-label">누가</div>
+      <div class="detail-value">최동인이 사람 모읍니다</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">뭘 하나</div>
+      <div class="detail-value">철학 원전 강독 + 수다</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">얼마나</div>
+      <div class="detail-value">격주 1회 정도</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">어디서</div>
+      <div class="detail-value">서울 어딘가 (모이면 정합니다)</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">몇 명</div>
+      <div class="detail-value">소규모, 8명 이내</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-label">첫 번째 책</div>
+      <div class="detail-value">신청받은 책 중 하나를 정합니다</div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- SECTION 3: 참여 -->
+<section id="join" class="form-section fade-in">
+  <div class="section-num">3</div>
+  <div class="section-title-en">Join</div>
+  <div class="section-title-ko">같이 읽읍시다</div>
+  <div class="section-body">
+    <p>
+      관심 있으시면 아래에 적어주세요. 연락드리겠습니다.
+    </p>
+  </div>
+
+  <form class="apply-form" id="applyForm">
+    <div class="form-group">
+      <label>이름</label>
+      <input type="text" name="name" placeholder="최동인" required>
+    </div>
+    <div class="form-group">
+      <label>전화번호</label>
+      <input type="tel" name="contact" placeholder="010-6495-0381" required>
+    </div>
+    <div class="form-group">
+      <label>하시는 일</label>
+      <textarea name="work" placeholder="뭐 하시는 분인지 3줄 정도로" style="min-height:60px"></textarea>
+    </div>
+    <div class="form-group">
+      <label>읽어보고 싶은 책/철학자</label>
+      <input type="text" name="book" placeholder="니체, 비트겐슈타인, 장자 등">
+    </div>
+    <div class="form-group">
+      <label>한마디</label>
+      <textarea name="note" placeholder="하고 싶은 말이 있으면 자유롭게. 없어도 됩니다."></textarea>
+    </div>
+    <button type="submit" class="submit-btn">보내기</button>
+  </form>
+
+  <div class="form-success" id="formSuccess">
+    <h3>잘 받았습니다.</h3>
+    <p>곧 연락드리겠습니다.</p>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>&copy; 2026 최동인</p>
+</footer>
+
+<script>
+  // Nav scroll effect
+  const nav = document.getElementById('nav');
+  window.addEventListener('scroll', () => {
+    nav.classList.toggle('scrolled', window.scrollY > 40);
+  });
+
+  // Fade-in on scroll
+  const faders = document.querySelectorAll('.fade-in');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.15 });
+  faders.forEach(el => observer.observe(el));
+
+  // Form submit
+  document.getElementById('applyForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = this.querySelector('.submit-btn');
+    btn.disabled = true;
+    btn.textContent = '보내는 중...';
+
+    const formData = new FormData(this);
+    const data = Object.fromEntries(formData.entries());
+
+    try {
+      const res = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+
+      if (res.ok) {
+        this.style.display = 'none';
+        document.getElementById('formSuccess').style.display = 'block';
+      } else {
+        btn.disabled = false;
+        btn.textContent = '보내기';
+        alert('전송에 실패했습니다. 다시 시도해주세요.');
+      }
+    } catch {
+      btn.disabled = false;
+      btn.textContent = '보내기';
+      alert('네트워크 오류가 발생했습니다.');
+    }
+  });
+</script>
+
+</body>
+</html>

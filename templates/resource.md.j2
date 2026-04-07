@@ -1,0 +1,58 @@
+# {{ event.title }}
+
+{% set stype = frontmatter.source_type | default("web") %}
+{% if stype == "youtube" %}
+> **유형**: YouTube 영상
+{% elif stype == "community" %}
+> **유형**: 커뮤니티 / SNS
+{% elif stype == "newsletter" %}
+> **유형**: 뉴스레터
+{% elif stype == "blog" %}
+> **유형**: 블로그
+{% else %}
+> **유형**: 웹 아티클
+{% endif %}
+{% if frontmatter.creator is defined and frontmatter.creator %}
+> **제작자**: {{ frontmatter.creator }}
+{% endif %}
+{% if frontmatter.publish_date is defined and frontmatter.publish_date %}
+> **발행일**: {{ frontmatter.publish_date }}
+{% endif %}
+{% if frontmatter.url is defined %}
+> **출처**: {{ frontmatter.url }}
+{% endif %}
+
+{% if frontmatter.keywords is defined %}
+## 키워드
+
+{% for kw in frontmatter.keywords %}{{ kw }} {% endfor %}
+
+{% endif %}
+{% if event.summary %}
+## 요약
+
+{{ event.summary }}
+
+{% endif %}
+{% if frontmatter.transcript is defined and frontmatter.transcript %}
+## 대본 전문
+
+{{ frontmatter.transcript }}
+
+{% endif %}
+{% if frontmatter.description is defined and frontmatter.description %}
+{% if stype == "youtube" %}
+## 영상 설명
+{% else %}
+## 설명
+{% endif %}
+
+{{ frontmatter.description }}
+
+{% endif %}
+{% if not (frontmatter.transcript is defined and frontmatter.transcript) and event.full_text %}
+## 원문
+
+{{ event.full_text }}
+
+{% endif %}

@@ -1,202 +1,216 @@
-"""Google Calendar connector — fetch logic only.
+"""Google Calendar API async wrapper.
 
-Ported from past/gcal_sync.py. Note formatting moved to outputs/meeting_note.py.
+All Google API calls are wrapped in asyncio.to_thread() since the
+google-api-python-client is synchronous.
 """
+
 from __future__ import annotations
 
-import json
-import logging
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import Any
+
+import structlog
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 from onlime.config import get_settings
-from onlime.connectors.base import BaseConnector, ConnectorResult
-from onlime.connectors.registry import register
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
-
-def _get_tz() -> ZoneInfo:
-    return ZoneInfo(get_settings().general.timezone)
+_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
-def parse_event_time(time_obj: dict) -> datetime:
-    """Parse a Google Calendar start/end time object."""
-    tz = _get_tz()
-    if 'dateTime' in time_obj:
-        dt = datetime.fromisoformat(time_obj['dateTime'])
-        return dt.astimezone(tz)
-    if 'date' in time_obj:
-        return datetime.strptime(time_obj['date'], '%Y-%m-%d').replace(tzinfo=tz)
-    return datetime.now(tz=tz)
+def _get_credentials() -> Credentials:
+    """Load credentials from token.json with auto-refresh.
 
-
-def is_all_day_event(event: dict) -> bool:
-    return 'date' in event.get('start', {})
-
-
-def classify_meeting(summary: str, attendees: list[str]) -> str:
-    """Classify meeting category based on title and attendees."""
-    s = summary.lower()
-    if any(kw in s for kw in ['투자', 'ir', 'investor', '피칭', 'pitch']):
-        return 'investor-update'
-    if any(kw in s for kw in ['1on1', '1:1', '원온원']):
-        return '1on1'
-    if any(kw in s for kw in ['내부', 'internal', '스탠드업', 'standup']):
-        return 'internal'
-    return 'external-partner'
-
-
-def _build_credentials():
-    """Build Google OAuth2 credentials, refreshing if needed."""
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
+    Raises RuntimeError if token.json doesn't exist (run setup_gcal.py first).
+    """
     settings = get_settings()
-    SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
-    creds_file = settings.gcal.resolved_creds_file
-    token_file = settings.gcal.resolved_token_file
-    creds = None
+    token_path = Path(settings.gcal.token_file).expanduser()
 
-    if token_file.exists():
-        creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
+    if not token_path.exists():
+        raise RuntimeError(
+            f"GCal token not found at {token_path}. "
+            "Run: python scripts/setup_gcal.py"
+        )
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not creds_file.exists():
-                logger.error(
-                    f"Google credentials not found at {creds_file}. "
-                    "Run: onlime setup gcal"
-                )
-                return None
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)
-            creds = flow.run_local_server(port=0)
+    creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
 
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json())
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        token_path.write_text(creds.to_json())
+        logger.info("gcal.token_refreshed")
 
     return creds
 
 
-def fetch_events(
-    days_back: int | None = None,
-    days_forward: int | None = None,
-) -> list[dict]:
-    """Fetch events from Google Calendar API using OAuth2 credentials."""
-    from googleapiclient.discovery import build
+def _build_service() -> Any:
+    """Build a Calendar API service object."""
+    creds = _get_credentials()
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
+
+def _normalize_event(item: dict[str, Any], calendar_id: str) -> dict[str, Any]:
+    """Normalize a Google Calendar event to a flat dict."""
+    start_raw = item.get("start", {})
+    end_raw = item.get("end", {})
+
+    # All-day events use 'date', timed events use 'dateTime'
+    all_day = "date" in start_raw and "dateTime" not in start_raw
+    start_str = start_raw.get("dateTime") or start_raw.get("date", "")
+    end_str = end_raw.get("dateTime") or end_raw.get("date", "")
+
+    attendees = [
+        a.get("email", "")
+        for a in item.get("attendees", [])
+        if not a.get("self")
+    ]
+
+    return {
+        "id": item["id"],
+        "calendar_id": calendar_id,
+        "summary": item.get("summary", "(제목 없음)"),
+        "start": start_str,
+        "end": end_str,
+        "all_day": all_day,
+        "location": item.get("location", ""),
+        "description": item.get("description", ""),
+        "attendees": attendees,
+        "status": item.get("status", "confirmed"),
+        "html_link": item.get("htmlLink", ""),
+    }
+
+
+async def get_events(
+    start: datetime,
+    end: datetime,
+    calendar_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch events from Google Calendar within [start, end)."""
     settings = get_settings()
-    tz = _get_tz()
-    days_back = days_back or settings.gcal.sync_days_back
-    days_forward = days_forward or settings.gcal.sync_days_forward
+    cal_ids = calendar_ids or settings.gcal.calendar_ids
 
-    creds = _build_credentials()
-    if not creds:
-        return []
+    def _fetch() -> list[dict[str, Any]]:
+        service = _build_service()
+        all_events: list[dict[str, Any]] = []
+        for cal_id in cal_ids:
+            result = (
+                service.events()
+                .list(
+                    calendarId=cal_id,
+                    timeMin=start.isoformat() + "Z" if not start.tzinfo else start.isoformat(),
+                    timeMax=end.isoformat() + "Z" if not end.tzinfo else end.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=50,
+                )
+                .execute()
+            )
+            for item in result.get("items", []):
+                all_events.append(_normalize_event(item, cal_id))
+        return all_events
 
-    service = build('calendar', 'v3', credentials=creds)
-
-    now = datetime.now(tz=tz)
-    time_min = (now - timedelta(days=days_back)).isoformat()
-    time_max = (now + timedelta(days=days_forward)).isoformat()
-
-    all_events = []
-    for cal_id in settings.gcal.calendar_ids:
-        page_token = None
-        while True:
-            result = service.events().list(
-                calendarId=cal_id,
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True,
-                orderBy='startTime',
-                pageToken=page_token,
-            ).execute()
-            all_events.extend(result.get('items', []))
-            page_token = result.get('nextPageToken')
-            if not page_token:
-                break
-
-    # Deduplicate by event ID
-    seen = set()
-    events = []
-    for e in all_events:
-        eid = e.get('id', '')
-        if eid not in seen:
-            seen.add(eid)
-            events.append(e)
-
-    logger.info(f"Fetched {len(events)} events from Google Calendar")
+    events = await asyncio.to_thread(_fetch)
+    logger.info("gcal.fetched", count=len(events))
     return events
 
 
-def fetch_events_from_json(json_path: str) -> list[dict]:
-    """Load events from a JSON file (for MCP/Claude Code integration)."""
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and 'events' in data:
-        return data['events']
-    return []
+async def create_event(
+    summary: str,
+    start: datetime,
+    end: datetime | None = None,
+    description: str = "",
+    location: str = "",
+    calendar_id: str = "primary",
+) -> dict[str, Any]:
+    """Create a new calendar event."""
+    if end is None:
+        end = start + timedelta(hours=1)
+
+    body: dict[str, Any] = {
+        "summary": summary,
+        "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Seoul"},
+        "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Seoul"},
+    }
+    if description:
+        body["description"] = description
+    if location:
+        body["location"] = location
+
+    def _create() -> dict[str, Any]:
+        service = _build_service()
+        return service.events().insert(calendarId=calendar_id, body=body).execute()
+
+    result = await asyncio.to_thread(_create)
+    logger.info("gcal.created", event_id=result["id"], summary=summary)
+    return _normalize_event(result, calendar_id)
 
 
-def _event_to_connector_result(event: dict) -> ConnectorResult:
-    """Convert a raw Google Calendar event to ConnectorResult."""
-    settings = get_settings()
-    tz = _get_tz()
+async def update_event(
+    event_id: str,
+    calendar_id: str = "primary",
+    **updates: Any,
+) -> dict[str, Any]:
+    """Update an existing calendar event."""
 
-    start = parse_event_time(event['start'])
-    end = parse_event_time(event['end'])
-    title = event.get('summary', 'Untitled Meeting')
+    def _update() -> dict[str, Any]:
+        service = _build_service()
+        # Fetch current event
+        event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        # Apply updates
+        for key, val in updates.items():
+            if key in ("start", "end") and isinstance(val, datetime):
+                event[key] = {"dateTime": val.isoformat(), "timeZone": "Asia/Seoul"}
+            else:
+                event[key] = val
+        return service.events().update(
+            calendarId=calendar_id, eventId=event_id, body=event
+        ).execute()
 
-    attendees = []
-    for a in event.get('attendees', []):
-        email = a.get('email', '')
-        name = settings.names.resolve_name(email) if email else a.get('displayName', '')
-        if name:
-            attendees.append(name)
-
-    duration = (end - start).total_seconds() / 60 if not is_all_day_event(event) else None
-
-    return ConnectorResult(
-        source_id=event.get('id', ''),
-        source_type='calendar',
-        connector_name='gcal',
-        timestamp=start,
-        title=title,
-        content=event.get('description', ''),
-        participants=attendees,
-        duration_minutes=duration,
-        metadata={
-            'location': event.get('location', ''),
-            'category': classify_meeting(title, [a.get('email', '') for a in event.get('attendees', [])]),
-            'updated': event.get('updated', ''),
-            'status': event.get('status', ''),
-            'all_day': is_all_day_event(event),
-            'end_time': end.isoformat(),
-        },
-        raw=event,
-    )
+    result = await asyncio.to_thread(_update)
+    logger.info("gcal.updated", event_id=event_id)
+    return _normalize_event(result, calendar_id)
 
 
-@register
-class GoogleCalendarConnector(BaseConnector):
-    name = "gcal"
+async def delete_event(
+    event_id: str,
+    calendar_id: str = "primary",
+) -> bool:
+    """Delete a calendar event."""
 
-    def fetch(self, *, days_back: int | None = None, days_forward: int | None = None,
-              json_path: str | None = None, **kwargs) -> list[ConnectorResult]:
-        if json_path:
-            raw_events = fetch_events_from_json(json_path)
+    def _delete() -> bool:
+        service = _build_service()
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        return True
+
+    result = await asyncio.to_thread(_delete)
+    logger.info("gcal.deleted", event_id=event_id)
+    return result
+
+
+def format_events_text(events: list[dict[str, Any]]) -> str:
+    """Format events list as Korean text for Telegram responses."""
+    if not events:
+        return "일정이 없습니다."
+
+    lines: list[str] = []
+    for ev in events:
+        start_str = ev["start"]
+        if ev["all_day"]:
+            time_part = "종일"
         else:
-            raw_events = fetch_events(days_back=days_back, days_forward=days_forward)
+            try:
+                dt = datetime.fromisoformat(start_str)
+                time_part = dt.strftime("%H:%M")
+            except (ValueError, TypeError):
+                time_part = start_str
 
-        return [_event_to_connector_result(e) for e in raw_events]
+        line = f"- {time_part} {ev['summary']}"
+        if ev.get("location"):
+            line += f" ({ev['location']})"
+        lines.append(line)
 
-    def is_available(self) -> bool:
-        settings = get_settings()
-        return settings.gcal.resolved_creds_file.exists() or settings.gcal.resolved_token_file.exists()
+    return "\n".join(lines)
