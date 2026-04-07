@@ -30,6 +30,7 @@ _CONTENT_DEFAULTS: dict[str, str] = {
     ContentType.VIDEO: "1.INPUT/Media",
     ContentType.CALENDAR: "1.INPUT/Meeting",
     ContentType.VOICE: "1.INPUT/Recording",
+    ContentType.PHOTO: "1.INPUT/Media",
     # LINK stays Inbox — community posts and unclassified URLs land here
     ContentType.LINK: "1.INPUT/Inbox",
 }

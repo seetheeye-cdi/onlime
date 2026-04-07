@@ -1,4 +1,4 @@
-"""GDrive/local folder watcher using watchdog for voice recordings."""
+"""GDrive/local folder watcher using watchdog for voice recordings and photos."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from onlime.models import ContentType, SourceType
 logger = structlog.get_logger()
 
 _AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".wma"}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
+_MEDIA_EXTENSIONS = _AUDIO_EXTENSIONS | _IMAGE_EXTENSIONS
 
 
 class _FileHandler(FileSystemEventHandler):
@@ -44,8 +46,8 @@ class _FileHandler(FileSystemEventHandler):
             if fnmatch.fnmatch(path.name, pattern):
                 return
 
-        # Only process audio files
-        if path.suffix.lower() not in _AUDIO_EXTENSIONS:
+        # Only process media files (audio + image)
+        if path.suffix.lower() not in _MEDIA_EXTENSIONS:
             return
 
         # Schedule async processing on the event loop
@@ -65,17 +67,24 @@ class _FileHandler(FileSystemEventHandler):
 
 
 def _build_event(path: Path) -> dict[str, Any]:
-    """Build an event dict from an audio file path with stable ID for dedup."""
+    """Build an event dict from a media file path with stable ID for dedup."""
     stat = path.stat()
     file_mtime = datetime.fromtimestamp(stat.st_mtime)
-    # Stable ID based on filename — Samsung filenames include timestamps so they're unique.
-    # This prevents reprocessing on daemon restart.
     stable_id = f"gdrive:{path.name}"
+
+    is_image = path.suffix.lower() in _IMAGE_EXTENSIONS
+    if is_image:
+        content_type = ContentType.PHOTO.value
+        raw_content = f"[사진] {path.name}"
+    else:
+        content_type = ContentType.VOICE.value
+        raw_content = f"[음성 파일] {path.name}"
+
     return {
         "id": stable_id,
         "source": SourceType.GDRIVE.value,
-        "content_type": ContentType.VOICE.value,
-        "raw_content": f"[음성 파일] {path.name}",
+        "content_type": content_type,
+        "raw_content": raw_content,
         "timestamp": file_mtime.isoformat(),
         "metadata": {
             "file_path": str(path),
@@ -120,7 +129,7 @@ class GDriveRescanTask:
             for path in resolved.rglob("*"):
                 if path.is_dir():
                     continue
-                if path.suffix.lower() not in _AUDIO_EXTENSIONS:
+                if path.suffix.lower() not in _MEDIA_EXTENSIONS:
                     continue
                 skip = False
                 for pattern in settings.gdrive.ignore_patterns:
@@ -146,7 +155,7 @@ class GDriveRescanTask:
 
 @register
 class GDriveConnector(BaseConnector):
-    """Watch local/GDrive folders for new audio files."""
+    """Watch local/GDrive folders for new audio and image files."""
 
     name = "gdrive"
 
@@ -194,7 +203,7 @@ class GDriveConnector(BaseConnector):
             for path in resolved.rglob("*"):
                 if path.is_dir():
                     continue
-                if path.suffix.lower() not in _AUDIO_EXTENSIONS:
+                if path.suffix.lower() not in _MEDIA_EXTENSIONS:
                     continue
                 # Skip ignored patterns
                 skip = False

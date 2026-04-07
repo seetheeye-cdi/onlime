@@ -1,0 +1,37 @@
+# {{ event.title }}
+
+> **유형**: 사진
+{% if frontmatter.taken_at is defined and frontmatter.taken_at %}
+> **촬영일**: {{ frontmatter.taken_at }}
+{% endif %}
+{% if frontmatter.location is defined and frontmatter.location %}
+> **장소**: {{ frontmatter.location }}
+{% endif %}
+{% if frontmatter.camera is defined and frontmatter.camera %}
+> **카메라**: {{ frontmatter.camera }}
+{% endif %}
+{% if frontmatter.file_size_mb is defined %}
+> **크기**: {{ frontmatter.file_size_mb }} MB{% if frontmatter.width is defined %} ({{ frontmatter.width }}x{{ frontmatter.height }}){% endif %}
+
+{% endif %}
+{% if frontmatter.keywords is defined %}
+## 키워드
+
+{% for kw in frontmatter.keywords %}{{ kw }} {% endfor %}
+
+{% endif %}
+{% if frontmatter.photo_description is defined and frontmatter.photo_description %}
+## 사진 설명
+
+{{ frontmatter.photo_description }}
+
+{% endif %}
+{% if frontmatter.gps_lat is defined %}
+## 위치
+
+GPS: {{ frontmatter.gps_lat }}, {{ frontmatter.gps_lon }}
+{% if frontmatter.location is defined %}
+{{ frontmatter.location }}
+{% endif %}
+
+{% endif %}

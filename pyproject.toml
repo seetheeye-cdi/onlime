@@ -45,6 +45,10 @@ dependencies = [
     # LLM
     "anthropic>=0.30",
 
+    # Image processing
+    "pillow>=11.0",
+    "pillow-heif>=0.18",
+
     # STT
     "faster-whisper>=1.0",
 

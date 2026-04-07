@@ -28,6 +28,7 @@ class ContentType(str, Enum):
     CALENDAR = "calendar"
     ARTICLE = "article"
     VIDEO = "video"
+    PHOTO = "photo"
 
 
 @dataclass

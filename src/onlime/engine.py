@@ -200,7 +200,45 @@ class Engine:
                         logger.exception("engine.stt_failed", event_id=event_id)
                         full_text = raw.raw_content  # keep original placeholder
 
-            # 2b. Web extraction for links
+            # 2b. Photo analysis (EXIF + Claude Vision)
+            if raw.content_type == ContentType.PHOTO:
+                image_path = raw.metadata.get("file_path")
+                if image_path:
+                    try:
+                        from onlime.processors.photo import analyze_photo, extract_metadata
+
+                        meta = await extract_metadata(image_path)
+                        logger.info("engine.photo_exif", event_id=event_id, meta_keys=list(meta.keys()))
+
+                        # Store EXIF info in frontmatter
+                        if meta.get("taken_at"):
+                            raw.timestamp = meta["taken_at"]
+                            extra_fm["taken_at"] = meta["taken_at"].strftime("%Y-%m-%d %H:%M:%S")
+                        if meta.get("camera"):
+                            extra_fm["camera"] = meta["camera"]
+                        if meta.get("gps_lat") is not None:
+                            extra_fm["gps_lat"] = meta["gps_lat"]
+                            extra_fm["gps_lon"] = meta["gps_lon"]
+                        if meta.get("location"):
+                            extra_fm["location"] = meta["location"]
+                        if meta.get("width"):
+                            extra_fm["width"] = meta["width"]
+                            extra_fm["height"] = meta["height"]
+                        if meta.get("file_size_mb"):
+                            extra_fm["file_size_mb"] = meta["file_size_mb"]
+
+                        # Claude Vision analysis
+                        vision = await analyze_photo(image_path)
+                        logger.info("engine.photo_vision", event_id=event_id, title=vision.get("title"))
+                        full_text = vision.get("description", "")
+                        extra_fm["photo_description"] = full_text
+                        extra_fm["vision_title"] = vision.get("title", "사진")
+                        extra_fm["vision_tags"] = vision.get("tags", [])
+                        template_name = "photo.md.j2"
+                    except Exception:
+                        logger.exception("engine.photo_failed", event_id=event_id)
+
+            # 2c. Web extraction for links
             web_source_type = ""
             if raw.content_type == ContentType.LINK:
                 from onlime.connectors.web import extract_urls, fetch_content
@@ -244,16 +282,19 @@ class Engine:
                     except Exception:
                         logger.exception("engine.web_failed", event_id=event_id, url=urls[0])
 
-            # 3. Summarize
+            # 3. Summarize (skip for PHOTO — Vision result serves as summary)
             summary = ""
-            prompt_type = "general"
-            if raw.source in (SourceType.KAKAO, SourceType.SLACK):
-                prompt_type = "chat"
-            elif raw.content_type in (ContentType.LINK, ContentType.ARTICLE, ContentType.VIDEO):
-                prompt_type = "article"
-            elif raw.content_type == ContentType.VOICE:
-                prompt_type = "voice_memo"
-            summary = await summarize(full_text, prompt_type)
+            if raw.content_type == ContentType.PHOTO:
+                summary = full_text  # Vision description is the summary
+            else:
+                prompt_type = "general"
+                if raw.source in (SourceType.KAKAO, SourceType.SLACK):
+                    prompt_type = "chat"
+                elif raw.content_type in (ContentType.LINK, ContentType.ARTICLE, ContentType.VIDEO):
+                    prompt_type = "article"
+                elif raw.content_type == ContentType.VOICE:
+                    prompt_type = "voice_memo"
+                summary = await summarize(full_text, prompt_type)
 
             # 3a. Resolve wikilinks in summary against vault name index
             if summary:
@@ -261,14 +302,19 @@ class Engine:
 
             # 3b. Extract keywords → [[wikilinks]]
             keywords: list[str] = []
-            try:
-                from onlime.processors.keywords import extract_keywords, to_wikilinks
-                keywords = await extract_keywords(full_text)
-                # 3c. Resolve keywords against vault name index
+            if raw.content_type == ContentType.PHOTO:
+                # Use Vision-generated tags as keywords
+                keywords = extra_fm.get("vision_tags", [])
                 keywords = resolve_keywords(keywords, self._name_index)
-                logger.info("engine.keywords", event_id=event_id, count=len(keywords))
-            except Exception:
-                logger.warning("engine.keywords_failed", event_id=event_id)
+            else:
+                try:
+                    from onlime.processors.keywords import extract_keywords, to_wikilinks
+                    keywords = await extract_keywords(full_text)
+                    # 3c. Resolve keywords against vault name index
+                    keywords = resolve_keywords(keywords, self._name_index)
+                    logger.info("engine.keywords", event_id=event_id, count=len(keywords))
+                except Exception:
+                    logger.warning("engine.keywords_failed", event_id=event_id)
 
             # 4. Categorize → vault folder
             category = categorize(raw)
@@ -279,8 +325,14 @@ class Engine:
             hashtags.extend(raw.metadata.get("hashtags", []))
             people: list[str] = []
 
-            # 5a. Voice: generate content-based title + extract people
-            if raw.content_type == ContentType.VOICE and full_text and full_text != raw.raw_content:
+            # 5a. Photo: use Vision-generated title
+            if raw.content_type == ContentType.PHOTO:
+                vision_title = extra_fm.get("vision_title", "사진")
+                title = f"{vision_title}-사진"
+                logger.info("engine.photo_title", event_id=event_id, title=title)
+
+            # 5b. Voice: generate content-based title + extract people
+            elif raw.content_type == ContentType.VOICE and full_text and full_text != raw.raw_content:
                 generated = await generate_title(full_text)
                 contact = recording_info.get("contact")
                 rec_type = recording_info.get("type", "voice_memo")
@@ -321,6 +373,18 @@ class Engine:
                     note_link = f"[[{note_path.stem}]]"
                     first_sentence = summary.split("\n", 1)[0][:80] if summary else ""
                     entry = f"- {time_str} {emoji} {note_link} — {first_sentence}"
+                    append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
+                except Exception:
+                    logger.warning("engine.daily_note_failed", event_id=event_id)
+
+            # 6b. Append to daily note for photos
+            if raw.content_type == ContentType.PHOTO:
+                try:
+                    time_str = raw.timestamp.strftime("%H:%M")
+                    note_link = f"[[{note_path.stem}]]"
+                    location = extra_fm.get("location", "").split(",")[0] if extra_fm.get("location") else ""
+                    suffix = f" @ {location}" if location else ""
+                    entry = f"- {time_str} 📷 {note_link}{suffix}"
                     append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
                 except Exception:
                     logger.warning("engine.daily_note_failed", event_id=event_id)
