@@ -451,7 +451,10 @@ async def _fetch_twitter(url: str) -> dict[str, str]:
 
     api_url = f"https://api.fxtwitter.com/{username}/status/{tid_match.group(1)}"
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(
+        timeout=15.0,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; Onlime/1.0)"},
+    ) as client:
         resp = await client.get(api_url)
         resp.raise_for_status()
         data = resp.json()
