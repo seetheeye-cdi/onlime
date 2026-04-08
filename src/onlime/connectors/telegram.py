@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from onlime.config import get_settings
 from onlime.connectors.base import BaseConnector
@@ -72,6 +72,7 @@ class TelegramConnector(BaseConnector):
         self._reply_futures: dict[str, asyncio.Future[str]] = {}
         self._vault_search: Any = None
         self._vault_graph: Any = None
+        self._store: Any = None
 
     def set_vault_search(self, search: Any) -> None:
         """Inject vault search instance (called from cli.py)."""
@@ -80,6 +81,10 @@ class TelegramConnector(BaseConnector):
     def set_vault_graph(self, graph: Any) -> None:
         """Inject vault graph instance (called from cli.py)."""
         self._vault_graph = graph
+
+    def set_store(self, store: Any) -> None:
+        """Inject state store for action item callbacks (called from cli.py)."""
+        self._store = store
 
     def fetch(self, **kwargs: Any) -> list:
         """Not used for push-based connector."""
@@ -95,6 +100,7 @@ class TelegramConnector(BaseConnector):
         self._app.add_handler(CommandHandler("clear", self._handle_clear))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         self._app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice))
+        self._app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         await self._app.initialize()
         await self._app.start()
@@ -195,6 +201,7 @@ class TelegramConnector(BaseConnector):
                 vault_search=self._vault_search,
                 engine_queue=self._queue,
                 vault_graph=self._vault_graph,
+                store=self._store,
             )
             if reply:
                 # Split long messages (Telegram 4096 char limit)
@@ -206,6 +213,41 @@ class TelegramConnector(BaseConnector):
             logger.exception("telegram.assistant_error", user=user_id)
             from onlime.errors import humanize_error
             await update.message.reply_text(f"⚠️ {humanize_error(exc)}")  # type: ignore[union-attr]
+
+    async def _handle_callback(self, update: Update, context: Any) -> None:
+        """Handle inline keyboard callback queries (e.g. action item completion)."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        if not query.from_user or not _is_authorized(query.from_user.id):
+            await query.answer("인증되지 않은 사용자입니다.")
+            return
+
+        data = query.data
+        if data.startswith("done:"):
+            task_id_str = data[5:]
+            try:
+                task_id = int(task_id_str)
+            except ValueError:
+                await query.answer("잘못된 task ID입니다.")
+                return
+
+            if self._store:
+                success = await self._store.complete_action_item(task_id)
+                if success:
+                    await query.answer("완료 처리했습니다!")
+                    # Update the button text to show completion
+                    try:
+                        old_text = query.message.text or ""
+                        await query.message.edit_text(f"{old_text}\n\n완료됨")
+                    except Exception:
+                        pass
+                else:
+                    await query.answer("할 일을 찾을 수 없습니다.")
+            else:
+                await query.answer("상태 저장소가 초기화되지 않았습니다.")
+        else:
+            await query.answer()
 
     async def _handle_voice(self, update: Update, context: Any) -> None:
         """Handle voice messages → download file → emit as VOICE event."""

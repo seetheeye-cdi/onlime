@@ -38,6 +38,14 @@
 {{ event.summary }}
 
 {% endif %}
+{% if frontmatter.action_items is defined and frontmatter.action_items %}
+## 액션 아이템
+
+{% for item in frontmatter.action_items %}
+- [ ] {{ item.task }}{% if item.owner %} (담당: {{ item.owner }}){% endif %}{% if item.due_date %} (기한: {{ item.due_date }}){% endif %}
+
+{% endfor %}
+{% endif %}
 {% if frontmatter.transcript is defined and frontmatter.transcript %}
 ## 전사 전문
 

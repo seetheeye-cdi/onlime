@@ -251,6 +251,48 @@ class StateStore:
         )
         await self.db.commit()
 
+    # --- Action Items ---
+
+    async def get_action_items(self, status: str = "pending", limit: int = 20) -> list[dict]:
+        """Fetch action_item tasks from task_queue."""
+        cursor = await self.db.execute(
+            """SELECT id, input_path, status, result, created_at
+               FROM task_queue
+               WHERE task_type = 'action_item' AND status = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (status, limit),
+        )
+        rows = await cursor.fetchall()
+        items: list[dict] = []
+        for r in rows:
+            row = dict(r)
+            if row.get("result"):
+                try:
+                    row["data"] = json.loads(row["result"])
+                except (json.JSONDecodeError, TypeError):
+                    row["data"] = {}
+            else:
+                row["data"] = {}
+            items.append(row)
+        return items
+
+    async def complete_action_item(self, task_id: int) -> bool:
+        """Mark an action_item as done."""
+        cursor = await self.db.execute(
+            "SELECT id FROM task_queue WHERE id = ? AND task_type = 'action_item'",
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        now = datetime.now().isoformat()
+        await self.db.execute(
+            "UPDATE task_queue SET status = 'done', completed_at = ? WHERE id = ?",
+            (now, task_id),
+        )
+        await self.db.commit()
+        return True
+
     # --- Health ---
 
     async def record_health(self, connector_name: str, status: str, message: str = "") -> None:

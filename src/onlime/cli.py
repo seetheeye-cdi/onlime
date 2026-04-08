@@ -73,6 +73,7 @@ def run() -> None:
 async def _run() -> None:
     from onlime.engine import Engine
     from onlime.maintenance import ClaudeSessionSync, EventRetryTask, GCalSyncTask, GraphIndexTask, KakaoSync, SchedulerTask, VaultIndexTask, VaultJanitor
+    from onlime.maintenance.meeting_brief import MeetingBriefTask
     from onlime.search.fts import VaultSearch
     from onlime.state.store import StateStore
 
@@ -148,6 +149,11 @@ async def _run() -> None:
             SchedulerTask(interval_seconds=300),
             settings.scheduler.enabled,
         ),
+        (
+            "Meeting brief (every 5 min check)",
+            MeetingBriefTask(interval_seconds=300),
+            settings.gcal.enabled,
+        ),
     ]
 
     # GDrive rescan needs engine.queue — conditional import
@@ -200,12 +206,17 @@ async def _run() -> None:
                 engine.set_telegram_app(conn._app)
                 conn.set_vault_search(hybrid_search)
                 conn.set_vault_graph(vault_graph)
-                # Inject Telegram app + name_index into scheduler for notifications & reviews
+                conn.set_store(store)
+                # Inject Telegram app + dependencies into background tasks
                 for t in tasks:
                     if hasattr(t, "set_telegram_app"):
                         t.set_telegram_app(conn._app)
                     if hasattr(t, "set_name_index"):
                         t.set_name_index(engine._name_index)
+                    if hasattr(t, "set_vault_search"):
+                        t.set_vault_search(hybrid_search)
+                    if hasattr(t, "set_vault_graph"):
+                        t.set_vault_graph(vault_graph)
             click.echo(f"{label} started.")
         except Exception as exc:
             click.echo(f"{label} failed to start: {exc}")

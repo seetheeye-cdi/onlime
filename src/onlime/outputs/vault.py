@@ -214,6 +214,74 @@ def append_to_daily_note(
     return daily_path
 
 
+def append_to_daily_todo(
+    vault_root: Path,
+    date: datetime,
+    items: list[dict],
+) -> Path:
+    """Append action items to the daily note's '## 할 일' section.
+
+    Creates the section between '## 일정' and '## 회고' if it doesn't exist.
+    Deduplicates by task text.
+    """
+    from onlime.processors.action_items import format_action_items_daily
+
+    settings = get_settings()
+    daily_dir = vault_root.expanduser() / settings.vault.daily_dir
+    date_str = date.strftime("%Y-%m-%d")
+    daily_path = daily_dir / f"{date_str}.md"
+
+    if daily_path.exists():
+        content = daily_path.read_text(encoding="utf-8")
+    else:
+        content = render_daily_note(date_str)
+
+    # Filter out items already present (dedup by task text)
+    new_items = [item for item in items if item["task"] not in content]
+    if not new_items:
+        return daily_path
+
+    todo_text = format_action_items_daily(new_items)
+    section_header = "## 할 일"
+
+    if section_header in content:
+        # Insert items at the end of the existing section
+        lines = content.split("\n")
+        new_lines: list[str] = []
+        i = 0
+        inserted = False
+        while i < len(lines):
+            new_lines.append(lines[i])
+            if lines[i].strip() == section_header and not inserted:
+                i += 1
+                # Collect existing entries until --- or ## heading
+                while i < len(lines) and not lines[i].startswith("## ") and lines[i].strip() != "---":
+                    new_lines.append(lines[i])
+                    i += 1
+                new_lines.append(todo_text)
+                inserted = True
+                continue
+            i += 1
+        content = "\n".join(new_lines)
+    else:
+        # Insert '## 할 일' section between '## 일정' and '## 회고'
+        marker = "## 회고"
+        if marker in content:
+            # Insert before ## 회고 with --- separator
+            content = content.replace(
+                f"---\n{marker}",
+                f"---\n{section_header}\n\n{todo_text}\n\n---\n{marker}",
+                1,
+            )
+        else:
+            # Fallback: append at end
+            content = content.rstrip() + f"\n\n{section_header}\n\n{todo_text}\n"
+
+    atomic_write(daily_path, content)
+    logger.info("daily_todo.appended", path=str(daily_path), items=len(new_items))
+    return daily_path
+
+
 def _default_body(event: ProcessedEvent) -> str:
     """Simple markdown body when no template is available."""
     parts = []

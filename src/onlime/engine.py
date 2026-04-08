@@ -19,6 +19,7 @@ from onlime.processors.name_resolver import (
     resolve_keywords,
     resolve_wikilinks,
 )
+from onlime.processors.action_items import extract_action_items, format_action_items_daily
 from onlime.processors.summarizer import MIN_SUMMARIZE_LENGTH, generate_title, summarize
 from onlime.state.store import StateStore
 
@@ -336,6 +337,32 @@ class Engine:
                 disable_web_page_preview=True,
             )
 
+    async def _send_action_items_telegram(
+        self, chat_id: int, action_items: list[dict], event_id: str,
+    ) -> None:
+        """Send action items as Telegram message with inline complete buttons."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram.constants import ParseMode
+
+        lines = ["<b>액션 아이템:</b>"]
+        buttons: list[list[InlineKeyboardButton]] = []
+        for item in action_items:
+            task_text = item["task"]
+            owner = f" (담당: {item['owner']})" if item.get("owner") else ""
+            lines.append(f"- {task_text}{owner}")
+
+        text = "\n".join(lines)
+        if len(text) > 4096:
+            text = text[:4090] + "..."
+
+        try:
+            await self._telegram_app.bot.send_message(
+                chat_id=chat_id, text=text,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.warning("engine.action_items_telegram_failed", event_id=event_id)
+
     # ------------------------------------------------------------------
     # Main pipeline orchestrator
     # ------------------------------------------------------------------
@@ -412,6 +439,26 @@ class Engine:
             if summary:
                 summary = resolve_wikilinks(summary, self._name_index)
 
+            # 3a. Extract action items (voice, chat messages)
+            action_items: list[dict] = []
+            if raw.content_type in (ContentType.VOICE, ContentType.MESSAGE) or \
+               raw.source in (SourceType.KAKAO, SourceType.SLACK):
+                try:
+                    meeting_ctx = None
+                    if meeting_event:
+                        meeting_ctx = {
+                            "attendees": meeting_event.get("attendees", []),
+                            "project": meeting_event.get("project"),
+                        }
+                    action_items = await extract_action_items(
+                        full_text,
+                        meeting_context=meeting_ctx,
+                    )
+                    if action_items:
+                        logger.info("engine.action_items", event_id=event_id, count=len(action_items))
+                except Exception:
+                    logger.warning("engine.action_items_failed", event_id=event_id)
+
             # 4. Extract keywords
             keywords: list[str] = []
             if raw.content_type == ContentType.PHOTO:
@@ -472,6 +519,9 @@ class Engine:
                 from onlime.processors.keywords import to_wikilinks
                 extra_fm["keywords"] = to_wikilinks(keywords)
 
+            if action_items:
+                extra_fm["action_items"] = action_items
+
             processed = ProcessedEvent(
                 raw_event_id=raw.id, title=title, summary=summary,
                 full_text=full_text, category=category, timestamp=raw.timestamp,
@@ -530,6 +580,29 @@ class Engine:
                 except Exception:
                     logger.warning("engine.daily_note_link_failed", event_id=event_id)
 
+            # 6b. Save action items to task_queue + daily todo
+            if action_items:
+                import json as _json
+                for item in action_items:
+                    item["source_note"] = note_path.stem
+                try:
+                    for item in action_items:
+                        task_id = await self.state.enqueue_task(
+                            "action_item", str(note_path), priority=3,
+                        )
+                        await self.state.db.execute(
+                            "UPDATE task_queue SET result = ? WHERE id = ?",
+                            (_json.dumps(item, ensure_ascii=False), task_id),
+                        )
+                    await self.state.db.commit()
+                except Exception:
+                    logger.warning("engine.action_items_save_failed", event_id=event_id)
+                try:
+                    from onlime.outputs.vault import append_to_daily_todo
+                    append_to_daily_todo(vault_root, raw.timestamp, action_items)
+                except Exception:
+                    logger.warning("engine.action_items_daily_failed", event_id=event_id)
+
             # 7. Update state
             await self.state.update_event_status(raw.id, "done", obsidian_path=str(note_path))
             logger.info("engine.done", event_id=event_id, vault_path=str(note_path))
@@ -540,6 +613,11 @@ class Engine:
                 await self._send_telegram_confirmation(
                     chat_id, message_id, note_path, vault_root, event_id,
                 )
+                # 8a. Send action items with inline buttons
+                if action_items:
+                    await self._send_action_items_telegram(
+                        chat_id, action_items, event_id,
+                    )
 
         except Exception as exc:
             await self.state.update_event_status(raw.id, "failed", error=str(exc))

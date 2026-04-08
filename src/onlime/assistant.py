@@ -155,6 +155,25 @@ _TOOLS = [
         },
     },
     {
+        "name": "manage_tasks",
+        "description": "액션 아이템(할 일) 조회 또는 완료 처리를 합니다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "complete"],
+                    "description": "list: 미완료 할 일 목록 조회, complete: 특정 할 일 완료 처리",
+                },
+                "task_id": {
+                    "type": "integer",
+                    "description": "완료 처리할 task ID (action=complete 시 필수)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "graph_stats",
         "description": "지식 그래프 통계를 조회합니다. entity를 지정하면 해당 노트의 연결 수, 생략하면 전체 상위 노드를 반환합니다.",
         "input_schema": {
@@ -185,6 +204,7 @@ async def handle_assistant_message(
     vault_search: Any | None = None,
     engine_queue: asyncio.Queue | None = None,
     vault_graph: Any | None = None,
+    store: Any | None = None,
 ) -> str:
     """Process a natural-language message through Claude tool-use.
 
@@ -229,6 +249,7 @@ async def handle_assistant_message(
                         vault_search=vault_search,
                         engine_queue=engine_queue,
                         vault_graph=vault_graph,
+                        store=store,
                     )
                     tool_results.append({
                         "type": "tool_result",
@@ -304,6 +325,7 @@ async def _execute_tool(
     vault_search: Any | None = None,
     engine_queue: asyncio.Queue | None = None,
     vault_graph: Any | None = None,
+    store: Any | None = None,
 ) -> str:
     """Execute a tool call and return the result as a string."""
     try:
@@ -315,6 +337,8 @@ async def _execute_tool(
             return await _tool_create_event(params)
         elif name == "save_note":
             return await _tool_save_note(params, engine_queue)
+        elif name == "manage_tasks":
+            return await _tool_manage_tasks(params, store)
         elif name == "graph_neighbors":
             return _tool_graph_neighbors(params, vault_graph)
         elif name == "graph_path":
@@ -444,6 +468,43 @@ async def _tool_save_note(
         return f"메모 저장 요청됨: {title or content[:30]}"
 
     return "엔진 큐가 사용 불가합니다."
+
+
+async def _tool_manage_tasks(params: dict[str, Any], store: Any | None) -> str:
+    """List or complete action items."""
+    if store is None:
+        return "상태 저장소가 초기화되지 않았습니다."
+
+    action = params.get("action", "list")
+
+    if action == "list":
+        items = await store.get_action_items(status="pending", limit=20)
+        if not items:
+            return "미완료 액션 아이템이 없습니다."
+        lines = [f"미완료 할 일 ({len(items)}건):"]
+        for item in items:
+            data = item.get("data", {})
+            task_text = data.get("task", item.get("input_path", ""))
+            owner = data.get("owner", "")
+            source = data.get("source_note", "")
+            line = f"- [#{item['id']}] {task_text}"
+            if owner:
+                line += f" (담당: {owner})"
+            if source:
+                line += f" — [[{source}]]"
+            lines.append(line)
+        return "\n".join(lines)
+
+    elif action == "complete":
+        task_id = params.get("task_id")
+        if not task_id:
+            return "task_id를 지정해주세요."
+        success = await store.complete_action_item(int(task_id))
+        if success:
+            return f"할 일 #{task_id}을(를) 완료 처리했습니다."
+        return f"할 일 #{task_id}을(를) 찾을 수 없습니다."
+
+    return f"알 수 없는 액션: {action}"
 
 
 def _tool_graph_neighbors(params: dict[str, Any], vault_graph: Any | None) -> str:
