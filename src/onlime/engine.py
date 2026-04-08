@@ -353,14 +353,18 @@ class Engine:
 
         raw = _dict_to_raw_event(event)
 
-        # 1. Save to state DB
+        # 1. Save to state DB (or allow retry of failed events)
         saved = await self.state.save_event(
             event_id=raw.id, source_type=raw.source.value,
             source_id=raw.id, connector_name=raw.source.value, payload=event,
         )
         if not saved:
-            logger.info("engine.duplicate", event_id=event_id)
-            return
+            existing = await self.state.get_event(raw.id)
+            if existing and existing["status"] == "pending" and existing["retry_count"] > 0:
+                logger.info("engine.retry", event_id=event_id, attempt=existing["retry_count"])
+            else:
+                logger.info("engine.duplicate", event_id=event_id)
+                return
 
         await self.state.update_event_status(raw.id, "processing")
 
@@ -502,6 +506,21 @@ class Engine:
                     append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
                 except Exception:
                     logger.warning("engine.daily_note_failed", event_id=event_id)
+            elif raw.content_type in (ContentType.LINK, ContentType.ARTICLE, ContentType.VIDEO):
+                try:
+                    time_str = raw.timestamp.strftime("%H:%M")
+                    note_link = f"[[{note_path.stem}]]"
+                    first_sentence = summary.split("\n", 1)[0][:80] if summary else ""
+                    if raw.content_type == ContentType.VIDEO:
+                        emoji = "🎬"
+                    elif raw.content_type == ContentType.ARTICLE:
+                        emoji = "📰"
+                    else:
+                        emoji = "🔗"
+                    entry = f"- {time_str} {emoji} {note_link} — {first_sentence}"
+                    append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
+                except Exception:
+                    logger.warning("engine.daily_note_link_failed", event_id=event_id)
 
             # 7. Update state
             await self.state.update_event_status(raw.id, "done", obsidian_path=str(note_path))

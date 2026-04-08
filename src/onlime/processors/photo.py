@@ -150,13 +150,11 @@ async def analyze_photo(image_path: str | Path) -> dict[str, Any]:
 
     Returns dict with: description, title, tags.
     """
-    import anthropic
-    from onlime.config import get_settings
+    from onlime.llm import get_claude_client
 
-    settings = get_settings()
     b64_data, media_type = _image_to_base64(image_path)
 
-    client = anthropic.AsyncAnthropic(api_key=settings.llm.api_key)
+    client = get_claude_client()
     response = await client.messages.create(
         model="claude-sonnet-4-6-20250514",
         max_tokens=1024,

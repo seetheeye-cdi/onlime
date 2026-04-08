@@ -160,6 +160,33 @@ class StateStore:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_event(self, event_id: str) -> dict | None:
+        """Fetch a single event by ID."""
+        cursor = await self.db.execute("SELECT * FROM events WHERE id=?", (event_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_retryable_events(self, max_retries: int = 3, max_age_hours: int = 24) -> list[dict]:
+        """Get failed events eligible for retry."""
+        cursor = await self.db.execute(
+            """SELECT id, payload, retry_count FROM events
+               WHERE status = 'failed'
+                 AND retry_count < ?
+                 AND created_at > datetime('now', ?)
+               ORDER BY created_at""",
+            (max_retries, f"-{max_age_hours} hours"),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def increment_retry(self, event_id: str) -> None:
+        """Mark a failed event as pending for retry and bump retry_count."""
+        await self.db.execute(
+            "UPDATE events SET status='pending', retry_count=retry_count+1 WHERE id=?",
+            (event_id,),
+        )
+        await self.db.commit()
+
     # --- Connector State ---
 
     async def get_cursor(self, connector_name: str) -> str | None:

@@ -72,7 +72,7 @@ def run() -> None:
 
 async def _run() -> None:
     from onlime.engine import Engine
-    from onlime.maintenance import GCalSyncTask, KakaoSync, VaultIndexTask, VaultJanitor
+    from onlime.maintenance import ClaudeSessionSync, EventRetryTask, GCalSyncTask, GraphIndexTask, KakaoSync, SchedulerTask, VaultIndexTask, VaultJanitor
     from onlime.search.fts import VaultSearch
     from onlime.state.store import StateStore
 
@@ -98,8 +98,12 @@ async def _run() -> None:
             click.echo("Semantic search unavailable (Ollama not running). FTS5 only.")
             semantic_search = None
 
+    from onlime.search.graph import VaultGraph
     from onlime.search.hybrid import HybridSearch
     hybrid_search = HybridSearch(vault_search, semantic_search)
+
+    vault_graph = VaultGraph(store.db, engine._name_index)
+    await vault_graph.ensure_schema()
 
     # === Background tasks — declarative list ===
     _bg_tasks: list[tuple[str, object, bool]] = [
@@ -123,6 +127,26 @@ async def _run() -> None:
             "Vault indexer (every 10 min, FTS5 + semantic)",
             VaultIndexTask(interval_seconds=600, search=vault_search, semantic=semantic_search),
             True,
+        ),
+        (
+            "Graph indexer (every 10 min, wikilinks)",
+            GraphIndexTask(interval_seconds=600, graph=vault_graph),
+            True,
+        ),
+        (
+            "Claude session sync (every 15 min)",
+            ClaudeSessionSync(interval_seconds=900, db=store.db),
+            True,
+        ),
+        (
+            "Event retry (every 5 min)",
+            EventRetryTask(interval_seconds=300, engine_queue=engine.queue),
+            True,
+        ),
+        (
+            "Scheduler (brief/summary, every 5 min check)",
+            SchedulerTask(interval_seconds=300),
+            settings.scheduler.enabled,
         ),
     ]
 
@@ -175,6 +199,11 @@ async def _run() -> None:
             if cls_name == "TelegramConnector":
                 engine.set_telegram_app(conn._app)
                 conn.set_vault_search(hybrid_search)
+                conn.set_vault_graph(vault_graph)
+                # Inject Telegram app into scheduler for notifications
+                for t in tasks:
+                    if hasattr(t, "set_telegram_app"):
+                        t.set_telegram_app(conn._app)
             click.echo(f"{label} started.")
         except Exception as exc:
             click.echo(f"{label} failed to start: {exc}")

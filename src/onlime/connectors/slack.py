@@ -1,4 +1,4 @@
-"""Slack Web API connector — push-based poller using bot token."""
+"""Slack Web API connector — polls channels and writes daily digest note."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import structlog
 from onlime.config import get_settings
 from onlime.connectors.base import BaseConnector
 from onlime.connectors.registry import register
-from onlime.models import ContentType, SourceType
+from onlime.llm import LLMError, call_llm
+from onlime.outputs.vault import atomic_write
 from onlime.security.secrets import get_secret_or_env
 
 logger = structlog.get_logger()
@@ -25,8 +26,20 @@ _SYSTEM_SUBTYPES = frozenset({
     "channel_purpose", "channel_name", "bot_add", "bot_remove",
 })
 
+# Digest: backfill at most 7 days on first run
+_DIGEST_BACKFILL_DAYS = 7
 
-# ---------- helpers (reused from archived slack.py) ----------
+_DIGEST_PROMPT = (
+    "다음은 Slack 워크스페이스의 하루 대화 내용입니다.\n"
+    "채널별로 핵심 업무/논의 내용을 1~2줄로 요약해주세요.\n"
+    "잡담/인사 등 중요하지 않은 대화는 과감히 생략하세요.\n"
+    "형식: `- **#채널명**: 요약 내용`\n"
+    "한 문장당 한 줄로 작성하세요.\n\n"
+    "{text}"
+)
+
+
+# ---------- helpers ----------
 
 
 def _strip_mrkdwn(text: str) -> str:
@@ -189,7 +202,6 @@ def _collect_channel_messages(
     Returns {date_str: [formatted_lines]}.
     """
     ch_id = ch["id"]
-    room_name = _channel_display_name(client, ch, user_cache)
 
     top_messages = _fetch_history(client, ch_id, oldest_ts)
     all_messages = list(top_messages)
@@ -236,20 +248,76 @@ def _collect_channel_messages(
     return result
 
 
+# ---------- digest note helpers ----------
+
+
+def _upsert_date_section(content: str, date_str: str, summary: str) -> str:
+    """Insert or replace a ## YYYY-MM-DD section in the digest note."""
+    section_header = f"## {date_str}"
+
+    if section_header in content:
+        # Replace existing section
+        lines = content.split("\n")
+        new_lines: list[str] = []
+        i = 0
+        replaced = False
+        while i < len(lines):
+            if lines[i].strip() == section_header and not replaced:
+                new_lines.append(section_header)
+                new_lines.append("")
+                new_lines.append(summary)
+                new_lines.append("")
+                # Skip old section body
+                i += 1
+                while i < len(lines) and not lines[i].startswith("## "):
+                    i += 1
+                replaced = True
+                continue
+            new_lines.append(lines[i])
+            i += 1
+        return "\n".join(new_lines)
+    else:
+        # Insert in reverse-chronological order (newest first, after frontmatter)
+        lines = content.split("\n")
+
+        # Find end of frontmatter
+        fm_end = 0
+        fm_count = 0
+        for idx, line in enumerate(lines):
+            if line.strip() == "---":
+                fm_count += 1
+                if fm_count == 2:
+                    fm_end = idx + 1
+                    break
+
+        # Find insertion point: before first ## with an older date
+        insert_at = len(lines)
+        for idx in range(fm_end, len(lines)):
+            if lines[idx].startswith("## "):
+                existing_date = lines[idx].strip()[3:]
+                if existing_date < date_str:
+                    insert_at = idx
+                    break
+
+        new_section = ["", section_header, "", summary, ""]
+        lines[insert_at:insert_at] = new_section
+        return "\n".join(lines)
+
+
 # ---------- connector ----------
 
 
 @register
 class SlackConnector(BaseConnector):
-    """Push-based Slack connector that polls channels on an interval."""
+    """Slack connector that writes daily digest notes per workspace."""
 
     name = "slack"
 
     def __init__(self) -> None:
         self._user_cache: dict[str, str] = {}
-        self._channel_last_ts: dict[str, float] = {}
         self._poll_task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[dict[str, Any]] | None = None
+        self._workspace_name: str = "Slack"
 
     def fetch(self, **kwargs: Any) -> list:
         return []
@@ -276,14 +344,10 @@ class SlackConnector(BaseConnector):
         tz = ZoneInfo(settings.general.timezone)
         poll_seconds = settings.slack.poll_interval_minutes * 60
 
-        # First run: look back sync_days_back
-        oldest = datetime.now(tz) - timedelta(days=settings.slack.sync_days_back)
-        initial_oldest_ts = oldest.timestamp()
-
         first_run = True
         while True:
             try:
-                await self._poll_once(token, settings, tz, initial_oldest_ts if first_run else None)
+                await self._poll_once(token, settings, tz, first_run)
                 first_run = False
             except asyncio.CancelledError:
                 raise
@@ -297,58 +361,130 @@ class SlackConnector(BaseConnector):
         token: str,
         settings: Any,
         tz: ZoneInfo,
-        override_oldest_ts: float | None = None,
+        first_run: bool = False,
     ) -> None:
-        """Run one poll cycle — channels processed concurrently (5 at a time)."""
+        """Poll all channels, summarize by date, write digest note."""
         from slack_sdk import WebClient
 
         client = WebClient(token=token)
+
+        # Resolve workspace name once
+        try:
+            auth = await asyncio.to_thread(client.auth_test)
+            if auth["ok"]:
+                self._workspace_name = auth.get("team", "Slack")
+        except Exception:
+            pass
 
         channels = await asyncio.to_thread(
             _fetch_channels, client, settings.slack.sync_channels,
         )
         logger.info("slack.poll", channels=len(channels))
 
+        now = datetime.now(tz)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if first_run:
+            # Backfill last N days (cap regardless of sync_days_back)
+            oldest_ts = (now - timedelta(days=_DIGEST_BACKFILL_DAYS)).timestamp()
+        else:
+            # Re-fetch full today for up-to-date digest
+            oldest_ts = today_midnight.timestamp()
+
+        # Collect messages from all channels
+        all_data: dict[str, dict[str, list[str]]] = {}  # date -> channel -> lines
         sem = asyncio.Semaphore(5)
 
-        async def _process_channel(ch: dict) -> None:
+        async def _collect_channel(ch: dict) -> tuple[str, dict[str, list[str]]]:
             async with sem:
-                ch_id = ch["id"]
-                oldest_ts = override_oldest_ts or self._channel_last_ts.get(ch_id, 0)
-
-                # Each thread gets its own client to avoid contention
                 thread_client = WebClient(token=token)
                 by_date = await asyncio.to_thread(
-                    _collect_channel_messages, thread_client, ch, oldest_ts, self._user_cache, tz,
+                    _collect_channel_messages, thread_client, ch,
+                    oldest_ts, self._user_cache, tz,
                 )
-
                 room_name = _channel_display_name(thread_client, ch, self._user_cache)
+                return room_name, by_date
 
-                for date_str, lines in by_date.items():
-                    if not lines:
-                        continue
+        results = await asyncio.gather(*[_collect_channel(ch) for ch in channels])
 
-                    raw_content = f"[Slack] {room_name} — {date_str}\n\n" + "\n".join(lines)
-                    event_id = f"slack:{ch_id}:{date_str}"
+        for room_name, by_date in results:
+            for date_str, lines in by_date.items():
+                if lines:
+                    all_data.setdefault(date_str, {})[room_name] = lines
 
-                    event_dict: dict[str, Any] = {
-                        "id": event_id,
-                        "source": SourceType.SLACK.value,
-                        "content_type": ContentType.MESSAGE.value,
-                        "raw_content": raw_content,
-                        "timestamp": datetime.strptime(date_str, "%Y-%m-%d")
-                        .replace(tzinfo=tz)
-                        .isoformat(),
-                        "metadata": {
-                            "room": room_name,
-                            "channel_id": ch_id,
-                            "message_count": len(lines),
-                        },
-                    }
+        if not all_data:
+            logger.info("slack.no_messages")
+            return
 
-                    await self.emit(event_dict, self._queue)
+        await self._write_digest(all_data, settings, tz)
+        logger.info(
+            "slack.digest_written",
+            dates=len(all_data),
+            workspace=self._workspace_name,
+        )
 
-                self._channel_last_ts[ch_id] = datetime.now(tz).timestamp()
-                logger.info("slack.channel_done", channel=room_name)
+    # ---------- digest writing ----------
 
-        await asyncio.gather(*[_process_channel(ch) for ch in channels])
+    async def _write_digest(
+        self,
+        data: dict[str, dict[str, list[str]]],
+        settings: Any,
+        tz: ZoneInfo,
+    ) -> None:
+        """Write/update the single digest note with date sections."""
+        vault_root = settings.vault.root.expanduser()
+        digest_dir = vault_root / "1.INPUT" / "Slack"
+        ws = self._workspace_name
+        digest_path = digest_dir / f"{ws}.md"
+
+        today_str = datetime.now(tz).strftime("%Y-%m-%d")
+
+        if digest_path.exists():
+            content = digest_path.read_text(encoding="utf-8")
+        else:
+            content = (
+                f"---\ntitle: {ws} Slack\ntype: slack-digest\n---\n"
+            )
+
+        for date_str in sorted(data.keys(), reverse=True):
+            section_header = f"## {date_str}"
+
+            # Skip existing past dates (already finalized)
+            if section_header in content and date_str != today_str:
+                continue
+
+            channels = data[date_str]
+            raw_text = self._format_day_text(channels)
+            if not raw_text.strip():
+                continue
+
+            summary = await self._summarize_day(raw_text, channels)
+            content = _upsert_date_section(content, date_str, summary)
+
+        atomic_write(digest_path, content)
+
+    @staticmethod
+    def _format_day_text(channels: dict[str, list[str]]) -> str:
+        """Format all channels' messages into text for LLM summarization."""
+        parts: list[str] = []
+        for ch_name, lines in sorted(channels.items()):
+            parts.append(f"### {ch_name}")
+            parts.extend(lines[:50])  # cap per channel to control tokens
+            parts.append("")
+        return "\n".join(parts)
+
+    @staticmethod
+    async def _summarize_day(
+        raw_text: str, channels: dict[str, list[str]],
+    ) -> str:
+        """Summarize a day's Slack conversations with LLM."""
+        prompt = _DIGEST_PROMPT.format(text=raw_text[:6000])
+        try:
+            return await call_llm(prompt, max_tokens=1024, caller="slack_digest")
+        except LLMError:
+            logger.warning("slack.digest_summarize_failed")
+            # Fallback: list channels with message counts
+            lines = []
+            for ch_name, msgs in sorted(channels.items()):
+                lines.append(f"- **{ch_name}**: {len(msgs)}건 대화")
+            return "\n".join(lines)

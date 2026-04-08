@@ -71,10 +71,15 @@ class TelegramConnector(BaseConnector):
         self._queue: asyncio.Queue[dict[str, Any]] | None = None
         self._reply_futures: dict[str, asyncio.Future[str]] = {}
         self._vault_search: Any = None
+        self._vault_graph: Any = None
 
     def set_vault_search(self, search: Any) -> None:
         """Inject vault search instance (called from cli.py)."""
         self._vault_search = search
+
+    def set_vault_graph(self, graph: Any) -> None:
+        """Inject vault graph instance (called from cli.py)."""
+        self._vault_graph = graph
 
     def fetch(self, **kwargs: Any) -> list:
         """Not used for push-based connector."""
@@ -189,6 +194,7 @@ class TelegramConnector(BaseConnector):
                 text=text,
                 vault_search=self._vault_search,
                 engine_queue=self._queue,
+                vault_graph=self._vault_graph,
             )
             if reply:
                 # Split long messages (Telegram 4096 char limit)

@@ -11,11 +11,10 @@ from typing import Any
 import structlog
 
 from onlime.config import get_settings
-from onlime.security.secrets import get_secret_or_env
 
 logger = structlog.get_logger()
 
-_MAX_TOOL_ROUNDS = 5
+_MAX_TOOL_ROUNDS = 15
 _MAX_HISTORY = 20
 
 # Per-chat conversation memory: chat_id → messages list
@@ -25,6 +24,7 @@ _SYSTEM_PROMPT = (
     "당신은 Onlime AI 비서입니다. 사용자의 Obsidian vault와 Google Calendar를 관리합니다.\n"
     "한국어로 간결하게 답변하세요.\n"
     "도구를 사용해 일정 확인, 노트 검색, 일정 생성, 메모 저장을 수행합니다.\n"
+    "지식 그래프로 노트 간 연결을 탐색할 수 있습니다 (graph_neighbors, graph_path, graph_stats).\n"
     "현재 시각: {now} (Asia/Seoul)\n"
 )
 
@@ -113,6 +113,69 @@ _TOOLS = [
             "required": ["content"],
         },
     },
+    {
+        "name": "graph_neighbors",
+        "description": "지식 그래프에서 특정 엔티티와 연결된 노트를 탐색합니다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {
+                    "type": "string",
+                    "description": "탐색할 엔티티 이름 (예: 앤쓰로픽 Anthropic)",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["both", "outgoing", "incoming"],
+                    "description": "탐색 방향 (both=양방향, outgoing=나가는 링크, incoming=들어오는 링크). 기본: both",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "탐색 깊이 (1-3). 기본: 1",
+                },
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "graph_path",
+        "description": "두 엔티티 사이의 최단 연결 경로를 찾습니다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "출발 엔티티",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "도착 엔티티",
+                },
+            },
+            "required": ["source", "target"],
+        },
+    },
+    {
+        "name": "graph_stats",
+        "description": "지식 그래프 통계를 조회합니다. entity를 지정하면 해당 노트의 연결 수, 생략하면 전체 상위 노드를 반환합니다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {
+                    "type": "string",
+                    "description": "통계를 볼 엔티티 (생략 시 전체 순위)",
+                },
+                "metric": {
+                    "type": "string",
+                    "enum": ["in_degree", "out_degree", "pagerank"],
+                    "description": "순위 기준 (기본: in_degree)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "상위 N개 (기본: 10)",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -121,6 +184,7 @@ async def handle_assistant_message(
     text: str,
     vault_search: Any | None = None,
     engine_queue: asyncio.Queue | None = None,
+    vault_graph: Any | None = None,
 ) -> str:
     """Process a natural-language message through Claude tool-use.
 
@@ -164,6 +228,7 @@ async def handle_assistant_message(
                         block.input,
                         vault_search=vault_search,
                         engine_queue=engine_queue,
+                        vault_graph=vault_graph,
                     )
                     tool_results.append({
                         "type": "tool_result",
@@ -187,25 +252,50 @@ def clear_history(chat_id: int) -> None:
     _conversations.pop(chat_id, None)
 
 
+_RETRY_DELAYS = [2, 5, 10]  # seconds — exponential backoff for 529/overloaded
+
+
 async def _call_claude(
     system: str,
     messages: list[dict[str, Any]],
 ) -> Any:
-    """Call Claude API with tool-use."""
+    """Call Claude API with tool-use. Retries on 529 overloaded errors."""
     import anthropic
 
-    settings = get_settings()
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    from onlime.llm import get_claude_client
 
-    response = await client.messages.create(
-        model=settings.llm.claude.model,
-        max_tokens=1024,
-        system=system,
-        tools=_TOOLS,
-        messages=messages,
-    )
-    return response
+    settings = get_settings()
+    client = get_claude_client()
+
+    last_exc: Exception | None = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            response = await client.messages.create(
+                model=settings.llm.claude.model,
+                max_tokens=1024,
+                system=system,
+                tools=_TOOLS,
+                messages=messages,
+            )
+            return response
+        except anthropic.APIStatusError as exc:
+            last_exc = exc
+            if exc.status_code == 529 and attempt < len(_RETRY_DELAYS):
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning("assistant.overloaded_retry", attempt=attempt + 1, delay=delay)
+                await asyncio.sleep(delay)
+                continue
+            raise
+        except anthropic.APIConnectionError as exc:
+            last_exc = exc
+            if attempt < len(_RETRY_DELAYS):
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning("assistant.connection_retry", attempt=attempt + 1, delay=delay)
+                await asyncio.sleep(delay)
+                continue
+            raise
+
+    raise last_exc  # type: ignore[misc]
 
 
 async def _execute_tool(
@@ -213,6 +303,7 @@ async def _execute_tool(
     params: dict[str, Any],
     vault_search: Any | None = None,
     engine_queue: asyncio.Queue | None = None,
+    vault_graph: Any | None = None,
 ) -> str:
     """Execute a tool call and return the result as a string."""
     try:
@@ -224,6 +315,12 @@ async def _execute_tool(
             return await _tool_create_event(params)
         elif name == "save_note":
             return await _tool_save_note(params, engine_queue)
+        elif name == "graph_neighbors":
+            return _tool_graph_neighbors(params, vault_graph)
+        elif name == "graph_path":
+            return _tool_graph_path(params, vault_graph)
+        elif name == "graph_stats":
+            return _tool_graph_stats(params, vault_graph)
         else:
             return f"알 수 없는 도구: {name}"
     except Exception as exc:
@@ -347,3 +444,78 @@ async def _tool_save_note(
         return f"메모 저장 요청됨: {title or content[:30]}"
 
     return "엔진 큐가 사용 불가합니다."
+
+
+def _tool_graph_neighbors(params: dict[str, Any], vault_graph: Any | None) -> str:
+    """Find neighbors of an entity in the knowledge graph."""
+    if vault_graph is None:
+        return "지식 그래프가 초기화되지 않았습니다."
+
+    entity = params.get("entity", "")
+    direction = params.get("direction", "both")
+    depth = params.get("depth", 1)
+
+    result = vault_graph.neighbors(entity, direction=direction, depth=depth)
+    if "error" in result:
+        return result["error"]
+
+    lines = [f"[[{result['entity']}]]의 연결 ({result['count']}건, {direction}, depth={depth}):"]
+    for nb in result["neighbors"]:
+        hop_label = f" (hop {nb['hop']})" if nb["hop"] > 1 else ""
+        lines.append(f"- [[{nb['name']}]]{hop_label}")
+    return "\n".join(lines)
+
+
+def _tool_graph_path(params: dict[str, Any], vault_graph: Any | None) -> str:
+    """Find shortest path between two entities."""
+    if vault_graph is None:
+        return "지식 그래프가 초기화되지 않았습니다."
+
+    source = params.get("source", "")
+    target = params.get("target", "")
+
+    result = vault_graph.shortest_path(source, target)
+    if "error" in result:
+        return result["error"]
+
+    if result["length"] < 0:
+        return result.get("message", "경로를 찾을 수 없습니다.")
+
+    path_str = " → ".join(f"[[{n}]]" for n in result["path"])
+    return f"최단 경로 (거리 {result['length']}):\n{path_str}"
+
+
+def _tool_graph_stats(params: dict[str, Any], vault_graph: Any | None) -> str:
+    """Get graph statistics for a specific entity or top nodes."""
+    if vault_graph is None:
+        return "지식 그래프가 초기화되지 않았습니다."
+
+    entity = params.get("entity")
+
+    if entity:
+        result = vault_graph.node_stats(entity)
+        if "error" in result:
+            return result["error"]
+
+        lines = [
+            f"[[{result['entity']}]] 연결 통계:",
+            f"- 들어오는 링크 (in): {result['in_degree']}건",
+            f"- 나가는 링크 (out): {result['out_degree']}건",
+        ]
+        if result["incoming"]:
+            lines.append(f"- 주요 인바운드: {', '.join(f'[[{n}]]' for n in result['incoming'][:10])}")
+        if result["outgoing"]:
+            lines.append(f"- 주요 아웃바운드: {', '.join(f'[[{n}]]' for n in result['outgoing'][:10])}")
+        return "\n".join(lines)
+    else:
+        metric = params.get("metric", "in_degree")
+        limit = params.get("limit", 10)
+
+        summary = vault_graph.summary()
+        result = vault_graph.top_nodes(metric=metric, limit=limit)
+
+        lines = [f"그래프 요약: {summary['nodes']}개 노드, {summary['edges']}개 엣지"]
+        lines.append(f"\n상위 {len(result['nodes'])}개 ({result['metric']} 기준):")
+        for i, node in enumerate(result["nodes"], 1):
+            lines.append(f"{i}. [[{node['name']}]] — {node['score']}")
+        return "\n".join(lines)

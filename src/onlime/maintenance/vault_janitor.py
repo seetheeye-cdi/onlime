@@ -142,14 +142,8 @@ def _collect_strays(root: Path) -> list[_Stray]:
 async def _classify_stray(stray: _Stray) -> str | None:
     """Ask Claude which bucket this file belongs in. Returns folder or None."""
     try:
-        import anthropic
-
-        from onlime.security.secrets import get_secret_or_env
+        from onlime.llm import get_claude_client
     except Exception:
-        return None
-
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    if not api_key:
         return None
 
     settings = get_settings()
@@ -164,7 +158,7 @@ async def _classify_stray(stray: _Stray) -> str | None:
     )
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=api_key)
+        client = get_claude_client()
         resp = await client.messages.create(
             model=settings.llm.claude.model,
             max_tokens=64,

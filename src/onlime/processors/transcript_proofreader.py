@@ -27,7 +27,6 @@ import structlog
 
 from onlime.config import get_settings
 from onlime.processors.summarizer import format_one_sentence_per_line
-from onlime.security.secrets import get_secret_or_env
 
 logger = structlog.get_logger()
 
@@ -94,11 +93,10 @@ def _split_chunks(text: str, size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVER
 
 
 async def _call_claude(chunk: str) -> str:
-    import anthropic
+    from onlime.llm import get_claude_client
 
     settings = get_settings()
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_claude_client()
 
     response = await client.messages.create(
         model=settings.llm.claude.model,

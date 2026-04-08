@@ -5,12 +5,26 @@ from __future__ import annotations
 import json
 import re
 
+import anthropic
 import structlog
 
 from onlime.config import get_settings
 from onlime.security.secrets import get_secret_or_env
 
 logger = structlog.get_logger()
+
+# --- Singleton clients ---
+
+_claude_client: anthropic.AsyncAnthropic | None = None
+
+
+def get_claude_client() -> anthropic.AsyncAnthropic:
+    """Return a module-level singleton AsyncAnthropic client."""
+    global _claude_client
+    if _claude_client is None:
+        api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
+        _claude_client = anthropic.AsyncAnthropic(api_key=api_key)
+    return _claude_client
 
 
 class LLMError(Exception):
@@ -23,11 +37,8 @@ async def _call_claude(
     model: str | None = None,
     max_tokens: int = 2048,
 ) -> str:
-    import anthropic
-
     settings = get_settings()
-    api_key = get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = get_claude_client()
 
     response = await client.messages.create(
         model=model or settings.llm.claude.model,
