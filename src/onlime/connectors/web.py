@@ -16,7 +16,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 
 import httpx
 import structlog
@@ -227,6 +227,39 @@ def _classify_url(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Redirect URL unwrapping (LinkedIn, Google, Facebook, etc.)
+# ---------------------------------------------------------------------------
+
+# Patterns: host-path → query-param that holds the real URL
+_REDIRECT_PATTERNS: list[tuple[str, str, str]] = [
+    # LinkedIn /safety/go/?url=<encoded>
+    ("linkedin.com", "/safety/go", "url"),
+    # Google redirect
+    ("google.com", "/url", "url"),
+    ("www.google.com", "/url", "url"),
+    # Facebook external link
+    ("l.facebook.com", "/l.php", "u"),
+    ("lm.facebook.com", "/l.php", "u"),
+]
+
+
+def _unwrap_redirect(url: str) -> str:
+    """If *url* is a known tracking-redirect, extract and return the real destination."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    for rhost, rpath, param in _REDIRECT_PATTERNS:
+        if host.endswith(rhost) and path == rpath:
+            qs = parse_qs(parsed.query)
+            targets = qs.get(param, [])
+            if targets:
+                real = unquote(targets[0])
+                logger.info("web.unwrap_redirect", original=url[:120], resolved=real[:120])
+                return real
+    return url
+
+
+# ---------------------------------------------------------------------------
 # Main Entry Point
 # ---------------------------------------------------------------------------
 
@@ -241,6 +274,9 @@ async def fetch_content(url: str) -> dict[str, str]:
     Returns a dict with guaranteed keys: title, text, url, source_type.
     Optional keys: creator, description, published_at, og_image, transcript.
     """
+    # Unwrap tracking redirects (LinkedIn, Google, Facebook)
+    url = _unwrap_redirect(url)
+
     # SSRF protection: reject private/internal network targets
     _validate_url(url)
 
@@ -263,15 +299,33 @@ async def fetch_content(url: str) -> dict[str, str]:
     # --- Firecrawl-first for ALL non-YouTube URLs ---
     result: dict[str, str] | None = None
 
+    _MIN_BODY_CHARS = 200  # JS-heavy SPAs often return <100 chars of junk
+
     if _check_firecrawl():
         try:
             result = await _fetch_firecrawl(url)
-            # Only accept if Firecrawl returned meaningful body content
-            if not result.get("text", "").strip():
-                logger.warning("web.firecrawl_empty", url=url)
-                result = None
+            body = result.get("text", "").strip()
+            if not body or len(body) < _MIN_BODY_CHARS:
+                # Retry once with longer JS wait for slow-rendering SPAs
+                logger.info("web.firecrawl_retry", url=url, chars=len(body))
+                result = await _fetch_firecrawl(url, wait_ms=8000)
+                body = result.get("text", "").strip()
+                if not body or len(body) < _MIN_BODY_CHARS:
+                    logger.warning("web.firecrawl_too_short", url=url, chars=len(body))
+                    result = None
         except Exception as exc:
             logger.warning("web.firecrawl_failed", url=url, error=str(exc))
+
+    # --- Jina Reader fallback (free, good JS rendering) ---
+    if result is None:
+        try:
+            result = await _fetch_jina(url)
+            body = result.get("text", "").strip()
+            if not body or len(body) < _MIN_BODY_CHARS:
+                logger.warning("web.jina_too_short", url=url, chars=len(body))
+                result = None
+        except Exception as exc:
+            logger.warning("web.jina_failed", url=url, error=str(exc))
 
     # --- Trafilatura fallback ---
     if result is None:
@@ -778,17 +832,19 @@ def _clean_conversation(text: str) -> tuple[str, str]:
 # Firecrawl Extractor — default for all non-YouTube URLs
 # ---------------------------------------------------------------------------
 
-async def _fetch_firecrawl(url: str) -> dict[str, str]:
+async def _fetch_firecrawl(url: str, *, wait_ms: int | None = None) -> dict[str, str]:
     """Extract content via Firecrawl API.
 
     Requests markdown body plus metadata so we get author, publish date,
     description, and ogImage without a separate HTML parse.
+    *wait_ms* overrides the default JS wait time (for retry on slow SPAs).
     """
     from onlime.security.secrets import get_secret_or_env
 
     api_key = get_secret_or_env("firecrawl-api-key", "FIRECRAWL_API_KEY")
     host = urlparse(url).hostname or ""
     settings = get_settings()
+    effective_wait = wait_ms if wait_ms is not None else settings.web.firecrawl_wait_ms
 
     async with httpx.AsyncClient(timeout=settings.web.firecrawl_timeout) as client:
         resp = await client.post(
@@ -826,7 +882,7 @@ async def _fetch_firecrawl(url: str) -> dict[str, str]:
                         "Version/17.0 Mobile/15E148 Safari/604.1"
                     ),
                 },
-                "waitFor": settings.web.firecrawl_wait_ms,
+                "waitFor": effective_wait,
             },
         )
         resp.raise_for_status()
@@ -901,6 +957,51 @@ async def _fetch_firecrawl(url: str) -> dict[str, str]:
     if og_image:
         result["og_image"] = og_image
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Jina Reader — free fallback with JS rendering
+# ---------------------------------------------------------------------------
+
+async def _fetch_jina(url: str) -> dict[str, str]:
+    """Extract content via Jina Reader API (free, JS-rendered markdown)."""
+    host = urlparse(url).hostname or ""
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://r.jina.ai/{url}",
+            headers={
+                "Accept": "application/json",
+                "X-No-Cache": "true",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    jina_data = data.get("data", {})
+    markdown = _clean_markdown(jina_data.get("content", ""))
+    title = jina_data.get("title", "") or url
+    description = jina_data.get("description", "")
+
+    source_type = _source_type_for_host(host)
+
+    logger.info(
+        "web.jina_ok",
+        url=url,
+        title=title[:60],
+        chars=len(markdown),
+        source_type=source_type,
+    )
+
+    result: dict[str, str] = {
+        "title": title,
+        "text": markdown,
+        "url": url,
+        "source_type": source_type,
+    }
+    if description:
+        result["description"] = description
     return result
 
 
