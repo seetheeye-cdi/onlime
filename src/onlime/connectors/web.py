@@ -426,51 +426,67 @@ def _extract_youtube_id(url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Twitter / X Extractor — oEmbed API (JS-gated pages need this)
+# Twitter / X Extractor — FxTwitter API (free, full text, no auth)
 # ---------------------------------------------------------------------------
 
-_TWITTER_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL)
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_TWEET_ID_RE = re.compile(r"/status/(\d+)")
 
 
 async def _fetch_twitter(url: str) -> dict[str, str]:
-    """Extract tweet content via Twitter oEmbed API.
+    """Extract tweet content via FxTwitter API.
 
     Twitter/X blocks all non-browser requests (Firecrawl gets
-    "JavaScript is not available"). The oEmbed endpoint is public,
-    returns the tweet text + author without JS rendering.
+    "JavaScript is not available"). FxTwitter is a free public API
+    that returns full tweet text, media, quote tweets, and metrics.
     """
-    import html as html_module
+    # Extract username and tweet ID from URL
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+    if len(path_parts) < 3:
+        raise ValueError(f"Cannot parse tweet URL: {url}")
+    username = path_parts[0]
+    tid_match = _TWEET_ID_RE.search(url)
+    if not tid_match:
+        raise ValueError(f"No tweet ID in URL: {url}")
 
-    # Normalize x.com → twitter.com for oEmbed
-    oembed_url = url.replace("x.com/", "twitter.com/").replace("X.com/", "twitter.com/")
+    api_url = f"https://api.fxtwitter.com/{username}/status/{tid_match.group(1)}"
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            "https://publish.twitter.com/oembed",
-            params={"url": oembed_url, "omit_script": "true"},
-        )
+        resp = await client.get(api_url)
         resp.raise_for_status()
         data = resp.json()
 
-    # Extract text from <p> tag only (excludes "— Author (@handle) Date" attribution)
-    raw_html = data.get("html", "")
-    p_match = _TWITTER_P_RE.search(raw_html)
-    p_content = p_match.group(1) if p_match else raw_html
+    tweet = data.get("tweet", {})
+    text = tweet.get("text", "")
+    author = tweet.get("author", {}).get("name", "")
+    handle = tweet.get("author", {}).get("screen_name", "")
 
-    # <br> → newline, strip remaining tags, unescape entities
-    text = re.sub(r"<br\s*/?>", "\n", p_content)
-    text = _HTML_TAG_RE.sub("", text)
-    text = html_module.unescape(text).strip()
+    # Append quote tweet if present
+    quote = tweet.get("quote")
+    if quote:
+        qt_author = quote.get("author", {}).get("name", "")
+        qt_text = quote.get("text", "")
+        if qt_text:
+            text += f"\n\n> **{qt_author}**: {qt_text}"
 
-    author = data.get("author_name", "")
-    title = f"{author}: {text[:60]}..." if len(text) > 60 else f"{author}: {text}"
+    # Append media descriptions
+    media_all = tweet.get("media", {}).get("all", [])
+    for m in media_all:
+        alt = m.get("altText", "")
+        mtype = m.get("type", "")
+        if alt:
+            text += f"\n\n[{mtype}: {alt}]"
+        elif mtype == "video":
+            text += f"\n\n[video: {m.get('url', '')}]"
+
+    title = f"{author}(@{handle}): {text[:60]}..." if len(text) > 60 else f"{author}(@{handle}): {text}"
 
     logger.info(
-        "web.twitter_oembed_ok",
+        "web.twitter_fxtwitter_ok",
         url=url,
-        author=author,
+        author=f"{author}(@{handle})",
         chars=len(text),
+        likes=tweet.get("likes"),
     )
 
     return {
@@ -478,7 +494,7 @@ async def _fetch_twitter(url: str) -> dict[str, str]:
         "text": text,
         "url": url,
         "source_type": "community",
-        "creator": author,
+        "creator": f"{author}(@{handle})",
     }
 
 
