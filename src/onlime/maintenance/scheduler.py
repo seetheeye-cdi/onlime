@@ -30,10 +30,15 @@ class SchedulerTask(BackgroundTask):
         super().__init__(interval_seconds)
         self._sent_today: dict[str, str] = {}  # {"morning": "2026-04-08", ...}
         self._telegram_app: Any = None
+        self._name_index: Any = None
 
     def set_telegram_app(self, app: Any) -> None:
         """Inject the Telegram Application for sending messages."""
         self._telegram_app = app
+
+    def set_name_index(self, index: Any) -> None:
+        """Inject VaultNameIndex for wikilink resolution in reviews."""
+        self._name_index = index
 
     async def run_once(self) -> None:
         if self._telegram_app is None:
@@ -59,6 +64,24 @@ class SchedulerTask(BackgroundTask):
         ):
             await self._send_daily_summary(settings, today)
             self._sent_today["evening"] = today
+
+        # Weekly Review — Sunday at configured hour
+        if (
+            now.weekday() == 6
+            and now.hour == settings.scheduler.weekly_review_hour
+            and self._sent_today.get("weekly") != today
+        ):
+            await self._generate_weekly_review(settings)
+            self._sent_today["weekly"] = today
+
+        # Monthly Review — 1st of month at configured hour (covers previous month)
+        if (
+            now.day == 1
+            and now.hour == settings.scheduler.monthly_review_hour
+            and self._sent_today.get("monthly") != today
+        ):
+            await self._generate_monthly_review(settings)
+            self._sent_today["monthly"] = today
 
     async def _send_morning_brief(self, settings: Any, tz: ZoneInfo, today: str) -> None:
         parts = [f"☀️ {today} 모닝 브리프\n"]
@@ -123,6 +146,47 @@ class SchedulerTask(BackgroundTask):
 
         await self._send_telegram("\n".join(parts))
         logger.info("scheduler.daily_summary_sent")
+
+    async def _generate_weekly_review(self, settings: Any) -> None:
+        """Generate weekly review for the current week (Mon-Sun)."""
+        try:
+            from datetime import timedelta
+
+            from onlime.maintenance.review_gen import generate_weekly_review
+
+            tz = ZoneInfo(settings.general.timezone)
+            today = datetime.now(tz).date()
+            # Current week's Monday
+            monday = today - timedelta(days=today.weekday())
+            path = await generate_weekly_review(
+                settings.vault.root, monday, self._name_index,
+            )
+            if path:
+                await self._send_telegram(f"📋 주간 리뷰를 생성했습니다: {path.stem}")
+                logger.info("scheduler.weekly_review_done", path=str(path))
+        except Exception:
+            logger.exception("scheduler.weekly_review_failed")
+
+    async def _generate_monthly_review(self, settings: Any) -> None:
+        """Generate monthly review for the previous month."""
+        try:
+            from onlime.maintenance.review_gen import generate_monthly_review
+
+            tz = ZoneInfo(settings.general.timezone)
+            today = datetime.now(tz).date()
+            # Previous month
+            if today.month == 1:
+                year, month = today.year - 1, 12
+            else:
+                year, month = today.year, today.month - 1
+            path = await generate_monthly_review(
+                settings.vault.root, year, month, self._name_index,
+            )
+            if path:
+                await self._send_telegram(f"📊 월간 리뷰를 생성했습니다: {path.stem}")
+                logger.info("scheduler.monthly_review_done", path=str(path))
+        except Exception:
+            logger.exception("scheduler.monthly_review_failed")
 
     async def _send_telegram(self, text: str) -> None:
         """Send a message to the primary Telegram user."""

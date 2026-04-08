@@ -200,10 +200,12 @@ async def _run() -> None:
                 engine.set_telegram_app(conn._app)
                 conn.set_vault_search(hybrid_search)
                 conn.set_vault_graph(vault_graph)
-                # Inject Telegram app into scheduler for notifications
+                # Inject Telegram app + name_index into scheduler for notifications & reviews
                 for t in tasks:
                     if hasattr(t, "set_telegram_app"):
                         t.set_telegram_app(conn._app)
+                    if hasattr(t, "set_name_index"):
+                        t.set_name_index(engine._name_index)
             click.echo(f"{label} started.")
         except Exception as exc:
             click.echo(f"{label} failed to start: {exc}")

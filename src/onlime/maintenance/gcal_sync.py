@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -73,8 +74,9 @@ class GCalSyncTask(BackgroundTask):
         vault_root = settings.vault.root.expanduser()
         daily_dir = vault_root / settings.vault.daily_dir
 
-        # Fetch today's events
-        now = datetime.now()
+        # Fetch today's events (timezone-aware to avoid UTC offset issues)
+        tz = ZoneInfo(settings.general.timezone)
+        now = datetime.now(tz)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         days_forward = getattr(settings.gcal, "sync_days_forward", 1)
         today_end = today_start + timedelta(days=days_forward)

@@ -1,0 +1,32 @@
+---
+created: {{ created }}
+type: weekly
+week: {{ week_label }}
+period: {{ start_date }} ~ {{ end_date }}
+author:
+  - "[[최동인]]"
+index:
+  - "[[MOC Weekly Reviews]]"
+---
+#### [[{{ prev_week }} |◀︎]] {{ week_label }} [[{{ next_week }} |▶︎]]
+---
+## 이번 주 요약
+
+{{ ai_summary }}
+
+---
+## 잡서 모음
+{% for day, sections in daily_entries.items() %}
+### {{ day }}
+{% if sections.scratch %}
+{{ sections.scratch }}
+{% else %}
+(기록 없음)
+{% endif %}
+{% endfor %}
+---
+## 회고
+
+{{ ai_reflection }}
+
+---

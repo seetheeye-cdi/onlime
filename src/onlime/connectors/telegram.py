@@ -175,7 +175,7 @@ class TelegramConnector(BaseConnector):
         type_label = "링크" if content_type == ContentType.LINK else "텍스트"
         hashtags = event.metadata.get("hashtags", [])
         tag_str = f" [{', '.join(hashtags)}]" if hashtags else ""
-        await update.message.reply_text(f"접수했습니다 ({type_label}{tag_str}). 처리 중...")  # type: ignore[union-attr]
+        await update.message.reply_text(f"접수했습니다 ({type_label}{tag_str})")  # type: ignore[union-attr]
         logger.info("telegram.received", type=type_label, user=update.effective_user.id)  # type: ignore[union-attr]
 
     async def _handle_assistant(self, update: Update, text: str) -> None:
@@ -204,7 +204,8 @@ class TelegramConnector(BaseConnector):
                 await update.message.reply_text("응답을 생성할 수 없습니다.")  # type: ignore[union-attr]
         except Exception as exc:
             logger.exception("telegram.assistant_error", user=user_id)
-            await update.message.reply_text(f"비서 응답 오류: {exc}")  # type: ignore[union-attr]
+            from onlime.errors import humanize_error
+            await update.message.reply_text(f"⚠️ {humanize_error(exc)}")  # type: ignore[union-attr]
 
     async def _handle_voice(self, update: Update, context: Any) -> None:
         """Handle voice messages → download file → emit as VOICE event."""

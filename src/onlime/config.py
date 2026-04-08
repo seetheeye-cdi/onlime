@@ -158,6 +158,8 @@ class SchedulerSettings(BaseModel):
     enabled: bool = True
     morning_brief_hour: int = 8
     daily_summary_hour: int = 23
+    weekly_review_hour: int = 22   # 일요일 22:00
+    monthly_review_hour: int = 7   # 매월 1일 07:00
 
 
 class ServerSettings(BaseModel):

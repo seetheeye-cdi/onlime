@@ -1,0 +1,31 @@
+---
+created: {{ created }}
+type: monthly
+month: {{ month_label }}
+period: {{ start_date }} ~ {{ end_date }}
+author:
+  - "[[최동인]]"
+index:
+  - "[[MOC Monthly Reviews]]"
+---
+#### [[{{ prev_month }} |◀︎]] {{ month_label }} [[{{ next_month }} |▶︎]]
+---
+## 이번 달 요약
+
+{{ ai_summary }}
+
+---
+## 주간 리뷰
+{% for week_file in weekly_reviews %}
+- [[{{ week_file }}]]
+{% endfor %}
+{% if not weekly_reviews %}
+(주간 리뷰 없음)
+{% endif %}
+
+---
+## 회고
+
+{{ ai_reflection }}
+
+---

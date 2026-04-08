@@ -345,6 +345,9 @@ class Engine:
 
         Stages: Save → Enrich → Summarize → Categorize → Write → Confirm.
         """
+        from onlime.connectors.progress import ProgressReporter
+        from onlime.errors import humanize_error
+
         event_id = event.get("id", "unknown")
         logger.info("engine.processing", event_id=event_id)
 
@@ -352,6 +355,7 @@ class Engine:
         message_id = event.pop("_telegram_message_id", None)
 
         raw = _dict_to_raw_event(event)
+        progress = await ProgressReporter.create(self._telegram_app, chat_id, message_id)
 
         # 1. Save to state DB (or allow retry of failed events)
         saved = await self.state.save_event(
@@ -376,19 +380,23 @@ class Engine:
 
             # 2. Content-type enrichment
             if raw.content_type == ContentType.VOICE:
+                await progress.update("🎤 음성 변환 중...")
                 full_text, template_name, recording_info = await self._enrich_voice(
                     raw, extra_fm, event_id,
                 )
             elif raw.content_type == ContentType.PHOTO:
+                await progress.update("📷 사진 분석 중...")
                 full_text, template_name = await self._enrich_photo(
                     raw, extra_fm, event_id,
                 )
             elif raw.content_type == ContentType.LINK:
+                await progress.update("🌐 웹 콘텐츠 추출 중...")
                 full_text, template_name = await self._enrich_web(
                     raw, extra_fm, event_id,
                 )
 
             # 3. Summarize (skip for PHOTO — Vision result serves as summary)
+            await progress.update("✍️ 요약 생성 중...")
             if raw.content_type == ContentType.PHOTO:
                 summary = full_text
             else:
@@ -527,6 +535,7 @@ class Engine:
             logger.info("engine.done", event_id=event_id, vault_path=str(note_path))
 
             # 8. Send Telegram confirmation
+            await progress.delete()
             if chat_id and self._telegram_app:
                 await self._send_telegram_confirmation(
                     chat_id, message_id, note_path, vault_root, event_id,
@@ -536,8 +545,9 @@ class Engine:
             await self.state.update_event_status(raw.id, "failed", error=str(exc))
             logger.exception("engine.failed", event_id=event_id)
 
+            await progress.delete()
             if chat_id and self._telegram_app:
                 await self._telegram_app.bot.send_message(
-                    chat_id=chat_id, text=f"처리 실패: {exc}",
+                    chat_id=chat_id, text=f"⚠️ {humanize_error(exc)}",
                     reply_to_message_id=message_id,
                 )
