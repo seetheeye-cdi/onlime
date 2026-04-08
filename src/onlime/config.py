@@ -81,6 +81,9 @@ class TelegramBotSettings(BaseModel):
     enabled: bool = True
     allowed_user_ids: list[int] = Field(default_factory=list)
     assistant_model: str = "claude"
+    group_sync_enabled: bool = False
+    allowed_group_ids: list[int] = Field(default_factory=list)
+    group_digest_interval_minutes: int = 30
 
 
 class GDriveSettings(BaseModel):

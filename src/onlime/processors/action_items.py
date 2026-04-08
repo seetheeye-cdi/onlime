@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from typing import Any
 
 import structlog
@@ -15,11 +16,12 @@ logger = structlog.get_logger()
 _MIN_TEXT_LENGTH = 200
 
 _PROMPT = (
+    "오늘 날짜: {today}\n"
     "다음 텍스트에서 액션 아이템(할 일, 약속, 결정사항)을 추출해주세요.\n"
     "JSON 배열로 반환. 각 항목: {{\"task\": \"...\", \"owner\": \"...\", \"due_date\": \"...\"}}\n"
     "- task: 구체적인 할 일 (한국어, 동사형으로 끝나게)\n"
     "- owner: 담당자 이름 (알 수 없으면 빈 문자열)\n"
-    "- due_date: 기한 (YYYY-MM-DD 형식, 알 수 없으면 빈 문자열)\n"
+    "- due_date: 기한 (YYYY-MM-DD 형식, 상대 날짜는 오늘 기준으로 계산, 알 수 없으면 빈 문자열)\n"
     "액션 아이템이 없으면 빈 배열 [] 을 반환하세요.\n"
     "{context}\n"
     "텍스트:\n{text}"
@@ -77,7 +79,7 @@ async def extract_action_items(
         return []
 
     context = _build_context(meeting_context)
-    prompt = _PROMPT.format(context=context, text=text[:8000])
+    prompt = _PROMPT.format(today=date.today().isoformat(), context=context, text=text[:8000])
 
     raw = await call_llm(prompt, max_tokens=512, caller="action_items")
     items = _parse_action_items(raw)

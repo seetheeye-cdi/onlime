@@ -72,7 +72,7 @@ def run() -> None:
 
 async def _run() -> None:
     from onlime.engine import Engine
-    from onlime.maintenance import ClaudeSessionSync, EventRetryTask, GCalSyncTask, GraphIndexTask, KakaoSync, SchedulerTask, VaultIndexTask, VaultJanitor
+    from onlime.maintenance import ClaudeSessionSync, EventRetryTask, GCalSyncTask, GraphIndexTask, KakaoSync, SchedulerTask, TelegramGroupDigestTask, VaultIndexTask, VaultJanitor
     from onlime.maintenance.meeting_brief import MeetingBriefTask
     from onlime.search.fts import VaultSearch
     from onlime.state.store import StateStore
@@ -153,6 +153,16 @@ async def _run() -> None:
             "Meeting brief (every 5 min check)",
             MeetingBriefTask(interval_seconds=300),
             settings.gcal.enabled,
+        ),
+        (
+            "Telegram group digest (every {} min)".format(
+                settings.telegram_bot.group_digest_interval_minutes
+            ),
+            TelegramGroupDigestTask(
+                interval_seconds=settings.telegram_bot.group_digest_interval_minutes * 60,
+                group_ids=settings.telegram_bot.allowed_group_ids,
+            ),
+            settings.telegram_bot.group_sync_enabled,
         ),
     ]
 

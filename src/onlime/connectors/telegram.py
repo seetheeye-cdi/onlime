@@ -95,9 +95,22 @@ class TelegramConnector(BaseConnector):
         self._queue = queue
         token = get_secret_or_env("telegram-bot-token", "TELEGRAM_BOT_TOKEN")
 
+        settings = get_settings()
+
         self._app = Application.builder().token(token).build()
         self._app.add_handler(CommandHandler("start", self._handle_start))
         self._app.add_handler(CommandHandler("clear", self._handle_clear))
+
+        # Group message handler (collect only, no reply) — registered in handler group 1
+        if settings.telegram_bot.group_sync_enabled:
+            self._app.add_handler(
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
+                    self._handle_group_text,
+                ),
+                group=1,
+            )
+
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         self._app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._handle_voice))
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
@@ -248,6 +261,39 @@ class TelegramConnector(BaseConnector):
                 await query.answer("상태 저장소가 초기화되지 않았습니다.")
         else:
             await query.answer()
+
+    async def _handle_group_text(self, update: Update, context: Any) -> None:
+        """Collect group messages into DB for periodic digest. No reply."""
+        msg = update.message
+        if not msg or not msg.text or not msg.chat:
+            return
+        chat = msg.chat
+        if chat.type not in ("group", "supergroup"):
+            return
+        allowed = get_settings().telegram_bot.allowed_group_ids
+        if allowed and chat.id not in allowed:
+            return
+        if not self._store:
+            return
+
+        user = update.effective_user
+        user_name = (
+            user.full_name if user else
+            (msg.sender_chat.title if msg.sender_chat else "unknown")
+        )
+        ts = msg.date.isoformat() if msg.date else datetime.now().isoformat()
+        group_name = chat.title or str(chat.id)
+
+        try:
+            await self._store.save_group_message(
+                group_id=chat.id,
+                group_name=group_name,
+                user_name=user_name,
+                text=msg.text,
+                ts=ts,
+            )
+        except Exception:
+            logger.exception("telegram.group_save_failed", group=chat.id)
 
     async def _handle_voice(self, update: Update, context: Any) -> None:
         """Handle voice messages → download file → emit as VOICE event."""

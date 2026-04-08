@@ -9,6 +9,7 @@ from onlime.maintenance.kakao_sync import KakaoSync
 from onlime.maintenance.meeting_brief import MeetingBriefTask
 from onlime.maintenance.scheduler import SchedulerTask
 from onlime.maintenance.vault_index import VaultIndexTask
+from onlime.maintenance.telegram_group_digest import TelegramGroupDigestTask
 from onlime.maintenance.vault_janitor import VaultJanitor
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "KakaoSync",
     "MeetingBriefTask",
     "SchedulerTask",
+    "TelegramGroupDigestTask",
     "VaultIndexTask",
     "VaultJanitor",
 ]

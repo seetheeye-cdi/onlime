@@ -88,10 +88,23 @@ CREATE TABLE IF NOT EXISTS health_checks (
     checked_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS telegram_group_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    group_name TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    message_ts TEXT NOT NULL,
+    digested INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status, priority);
 CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(source_path);
+CREATE INDEX IF NOT EXISTS idx_tg_group_digest
+    ON telegram_group_messages(group_id, digested, message_ts);
 """
 
 
@@ -300,5 +313,44 @@ class StateStore:
         await self.db.execute(
             "INSERT INTO health_checks (connector_name, status, message, checked_at) VALUES (?, ?, ?, ?)",
             (connector_name, status, message, now),
+        )
+        await self.db.commit()
+
+    # --- Telegram Group Messages ---
+
+    async def save_group_message(
+        self,
+        group_id: int,
+        group_name: str,
+        user_name: str,
+        text: str,
+        ts: str,
+    ) -> None:
+        now = datetime.now().isoformat()
+        await self.db.execute(
+            """INSERT INTO telegram_group_messages
+               (group_id, group_name, user_name, message_text, message_ts, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (group_id, group_name, user_name, text, ts, now),
+        )
+        await self.db.commit()
+
+    async def get_undigested_messages(self, group_id: int) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT id, group_id, group_name, user_name, message_text, message_ts
+               FROM telegram_group_messages
+               WHERE group_id = ? AND digested = 0
+               ORDER BY message_ts ASC""",
+            (group_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def mark_messages_digested(self, group_id: int, before_ts: str) -> None:
+        await self.db.execute(
+            """UPDATE telegram_group_messages
+               SET digested = 1
+               WHERE group_id = ? AND digested = 0 AND message_ts <= ?""",
+            (group_id, before_ts),
         )
         await self.db.commit()

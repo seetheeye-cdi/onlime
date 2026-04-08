@@ -26,6 +26,11 @@ _SYSTEM_PROMPT = (
     "도구를 사용해 일정 확인, 노트 검색, 일정 생성, 메모 저장을 수행합니다.\n"
     "지식 그래프로 노트 간 연결을 탐색할 수 있습니다 (graph_neighbors, graph_path, graph_stats).\n"
     "현재 시각: {now} (Asia/Seoul)\n"
+    "\n"
+    "응답 규칙:\n"
+    "- 이모지 사용 금지. 순수 텍스트로만 답변하세요.\n"
+    "- Markdown 서식(**, *, #, ``` 등) 사용 금지. Telegram 플레인 텍스트로 전송됩니다.\n"
+    "- 오늘 일정 조회 시 start_date를 생략하세요 (기본값=오늘).\n"
 )
 
 _TOOLS = [
@@ -235,6 +240,7 @@ async def handle_assistant_message(
             text_parts = [b.text for b in content_blocks if b.type == "text"]
             reply = "\n".join(text_parts) if text_parts else ""
             history.append({"role": "assistant", "content": content_blocks})
+            logger.info("assistant.reply", chat_id=chat_id, rounds=_round + 1, reply_len=len(reply))
             return reply
 
         if stop_reason == "tool_use":
@@ -243,6 +249,7 @@ async def handle_assistant_message(
             tool_results = []
             for block in content_blocks:
                 if block.type == "tool_use":
+                    logger.info("assistant.tool_call", tool=block.name, params=block.input, round=_round)
                     result = await _execute_tool(
                         block.name,
                         block.input,
@@ -378,6 +385,7 @@ async def _tool_search_vault(
 async def _tool_get_events(params: dict[str, Any]) -> str:
     """Fetch Google Calendar events."""
     from pathlib import Path
+    from zoneinfo import ZoneInfo
 
     from onlime.config import get_settings
 
@@ -389,17 +397,18 @@ async def _tool_get_events(params: dict[str, Any]) -> str:
 
     from onlime.connectors.gcal import format_events_text, get_events
 
-    today = datetime.now().date()
+    tz = ZoneInfo(settings.general.timezone)
+    today = datetime.now(tz).date()
     start_str = params.get("start_date")
     end_str = params.get("end_date")
 
     if start_str:
-        start = datetime.fromisoformat(start_str)
+        start = datetime.fromisoformat(start_str).replace(tzinfo=tz)
     else:
-        start = datetime.combine(today, datetime.min.time())
+        start = datetime.combine(today, datetime.min.time(), tzinfo=tz)
 
     if end_str:
-        end = datetime.fromisoformat(end_str)
+        end = datetime.fromisoformat(end_str).replace(tzinfo=tz)
     else:
         end = start + timedelta(days=1)
 
@@ -412,6 +421,7 @@ async def _tool_get_events(params: dict[str, Any]) -> str:
 async def _tool_create_event(params: dict[str, Any]) -> str:
     """Create a Google Calendar event."""
     from pathlib import Path
+    from zoneinfo import ZoneInfo
 
     from onlime.config import get_settings
 
@@ -422,9 +432,14 @@ async def _tool_create_event(params: dict[str, Any]) -> str:
 
     from onlime.connectors.gcal import create_event
 
+    tz = ZoneInfo(settings.general.timezone)
     summary = params["summary"]
     start = datetime.fromisoformat(params["start_datetime"])
+    if not start.tzinfo:
+        start = start.replace(tzinfo=tz)
     end = datetime.fromisoformat(params["end_datetime"]) if params.get("end_datetime") else None
+    if end and not end.tzinfo:
+        end = end.replace(tzinfo=tz)
     description = params.get("description", "")
     location = params.get("location", "")
 
