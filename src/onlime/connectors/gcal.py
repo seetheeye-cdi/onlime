@@ -192,6 +192,53 @@ async def delete_event(
     return result
 
 
+async def find_overlapping_event(
+    recorded_at: datetime,
+    buffer_minutes: int = 15,
+) -> dict[str, Any] | None:
+    """Find a calendar event overlapping the recording timestamp (±buffer).
+
+    Returns the closest normalized event dict with an added "project" key,
+    or None if no overlapping event is found.
+    """
+    try:
+        start = recorded_at - timedelta(minutes=buffer_minutes)
+        end = recorded_at + timedelta(minutes=buffer_minutes)
+        events = await get_events(start, end)
+    except Exception:
+        logger.warning("gcal.overlap_lookup_failed", recorded_at=recorded_at.isoformat())
+        return None
+
+    if not events:
+        return None
+
+    # Filter out all-day events (not meetings)
+    timed = [e for e in events if not e["all_day"]]
+    if not timed:
+        return None
+
+    # Pick the event whose start is closest to recorded_at
+    def _distance(ev: dict[str, Any]) -> float:
+        try:
+            ev_start = datetime.fromisoformat(ev["start"])
+            # Strip tzinfo for comparison if recorded_at is naive
+            if ev_start.tzinfo and not recorded_at.tzinfo:
+                ev_start = ev_start.replace(tzinfo=None)
+            return abs((ev_start - recorded_at).total_seconds())
+        except (ValueError, TypeError):
+            return float("inf")
+
+    best = min(timed, key=_distance)
+    best["project"] = _detect_project(best)
+    logger.info(
+        "gcal.overlap_found",
+        summary=best["summary"],
+        project=best["project"],
+        recorded_at=recorded_at.isoformat(),
+    )
+    return best
+
+
 def _detect_project(ev: dict[str, Any]) -> str | None:
     """Detect project from calendar_id or event summary keywords."""
     settings = get_settings()

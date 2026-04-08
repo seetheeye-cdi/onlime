@@ -91,6 +91,31 @@ _YOUTUBE_HOSTS = {
     "youtu.be", "music.youtube.com",
 }
 
+# Twitter / X — need oEmbed extraction (JS-gated, Firecrawl fails)
+_TWITTER_HOSTS = {
+    "twitter.com", "www.twitter.com",
+    "x.com", "www.x.com",
+    "mobile.twitter.com", "mobile.x.com",
+}
+
+# AI conversation sharing platforms
+_CONVERSATION_HOSTS = {
+    "claude.ai", "chatgpt.com", "chat.openai.com",
+    "gemini.google.com", "deepseek.com", "chat.deepseek.com",
+    "perplexity.ai", "www.perplexity.ai",
+    "poe.com",
+}
+
+# Research / academic platforms — source_type "article" but need cleanup
+_RESEARCH_HOSTS = {
+    "arxiv.org", "www.arxiv.org",
+    "scholar.google.com",
+    "semanticscholar.org", "www.semanticscholar.org",
+    "openreview.net",
+    "papers.ssrn.com",
+    "pubmed.ncbi.nlm.nih.gov",
+}
+
 # Korean community / forum sites
 _COMMUNITY_HOSTS = {
     "dcinside.com", "www.dcinside.com", "m.dcinside.com",
@@ -165,11 +190,15 @@ _NEWS_HOSTS = {
 def _source_type_for_host(host: str) -> str:
     """Derive a semantic source_type string from the hostname.
 
-    Returns one of: youtube, community, blog, newsletter, article.
-    'article' is the default for unknown sites.
+    Returns one of: youtube, conversation, community, blog, newsletter,
+    research, article.  'article' is the default for unknown sites.
     """
     host = host.lower()
 
+    if host in _CONVERSATION_HOSTS or host.endswith(".claude.ai"):
+        return "conversation"
+    if host in _RESEARCH_HOSTS:
+        return "research"
     if host in _COMMUNITY_HOSTS:
         return "community"
     if host in _NEWSLETTER_HOSTS or host.endswith(".substack.com"):
@@ -188,10 +217,12 @@ def _source_type_for_host(host: str) -> str:
 
 
 def _classify_url(url: str) -> str:
-    """Classify URL: 'youtube' or 'web' (everything else)."""
-    host = urlparse(url).hostname or ""
-    if host.lower() in _YOUTUBE_HOSTS:
+    """Classify URL: 'youtube', 'twitter', or 'web' (everything else)."""
+    host = (urlparse(url).hostname or "").lower()
+    if host in _YOUTUBE_HOSTS:
         return "youtube"
+    if host in _TWITTER_HOSTS:
+        return "twitter"
     return "web"
 
 
@@ -220,33 +251,56 @@ async def fetch_content(url: str) -> dict[str, str]:
     if url_type == "youtube":
         return await _fetch_youtube(url)
 
+    if url_type == "twitter":
+        try:
+            result = await _fetch_twitter(url)
+            if result and result.get("text", "").strip():
+                return result
+        except Exception as exc:
+            logger.warning("web.twitter_oembed_failed", url=url, error=str(exc))
+        # Fall through to Firecrawl/trafilatura as last resort
+
     # --- Firecrawl-first for ALL non-YouTube URLs ---
+    result: dict[str, str] | None = None
+
     if _check_firecrawl():
         try:
             result = await _fetch_firecrawl(url)
             # Only accept if Firecrawl returned meaningful body content
-            if result.get("text", "").strip():
-                return result
-            logger.warning("web.firecrawl_empty", url=url)
+            if not result.get("text", "").strip():
+                logger.warning("web.firecrawl_empty", url=url)
+                result = None
         except Exception as exc:
             logger.warning("web.firecrawl_failed", url=url, error=str(exc))
 
     # --- Trafilatura fallback ---
-    try:
-        result = await _fetch_trafilatura(url)
-        if result.get("text", "").strip():
-            return result
-        logger.warning("web.trafilatura_empty", url=url)
-    except Exception:
-        logger.warning("web.trafilatura_failed", url=url)
+    if result is None:
+        try:
+            result = await _fetch_trafilatura(url)
+            if not result.get("text", "").strip():
+                logger.warning("web.trafilatura_empty", url=url)
+                result = None
+        except Exception:
+            logger.warning("web.trafilatura_failed", url=url)
 
-    # Last-resort stub — pipeline must not crash on empty body
-    return {
-        "title": url,
-        "text": "",
-        "url": url,
-        "source_type": _source_type_for_host(host),
-    }
+    if result is None:
+        # Last-resort stub — pipeline must not crash on empty body
+        return {
+            "title": url,
+            "text": "",
+            "url": url,
+            "source_type": _source_type_for_host(host),
+        }
+
+    # --- Post-processing: AI conversation cleanup ---
+    if _is_conversation_url(url):
+        text, participant = _clean_conversation(result["text"])
+        result["text"] = text
+        if participant:
+            result["creator"] = participant
+        logger.info("web.conversation_cleaned", url=url, participant=participant)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +426,63 @@ def _extract_youtube_id(url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Twitter / X Extractor — oEmbed API (JS-gated pages need this)
+# ---------------------------------------------------------------------------
+
+_TWITTER_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+async def _fetch_twitter(url: str) -> dict[str, str]:
+    """Extract tweet content via Twitter oEmbed API.
+
+    Twitter/X blocks all non-browser requests (Firecrawl gets
+    "JavaScript is not available"). The oEmbed endpoint is public,
+    returns the tweet text + author without JS rendering.
+    """
+    import html as html_module
+
+    # Normalize x.com → twitter.com for oEmbed
+    oembed_url = url.replace("x.com/", "twitter.com/").replace("X.com/", "twitter.com/")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            "https://publish.twitter.com/oembed",
+            params={"url": oembed_url, "omit_script": "true"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    # Extract text from <p> tag only (excludes "— Author (@handle) Date" attribution)
+    raw_html = data.get("html", "")
+    p_match = _TWITTER_P_RE.search(raw_html)
+    p_content = p_match.group(1) if p_match else raw_html
+
+    # <br> → newline, strip remaining tags, unescape entities
+    text = re.sub(r"<br\s*/?>", "\n", p_content)
+    text = _HTML_TAG_RE.sub("", text)
+    text = html_module.unescape(text).strip()
+
+    author = data.get("author_name", "")
+    title = f"{author}: {text[:60]}..." if len(text) > 60 else f"{author}: {text}"
+
+    logger.info(
+        "web.twitter_oembed_ok",
+        url=url,
+        author=author,
+        chars=len(text),
+    )
+
+    return {
+        "title": title,
+        "text": text,
+        "url": url,
+        "source_type": "community",
+        "creator": author,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Markdown cleanup — aggressively strip platform boilerplate
 # ---------------------------------------------------------------------------
 
@@ -415,6 +526,32 @@ _ARTICLE_END_MARKERS = [
     "back to top",
     "sign in or create account",
     "to revisit this article",
+    # Claude / ChatGPT / AI shared conversation
+    "start your own conversation",
+    "start a new chat",
+    "sign up for free",
+    "chatgpt can make mistakes",
+    "get smarter responses",
+    "get responses tailored to you",
+    "discover more",
+    "ask follow-up",
+    # Medium / Substack
+    "if you enjoyed this",
+    "subscribe to get",
+    "thanks for reading",
+    "share this post",
+    "a]ready have an account? sign in",
+    "start writing",
+    # Velog
+    "이 글이 좋으셨다면",
+    "0개의 댓글",
+    # General CTA
+    "more from this author",
+    "read more articles",
+    "continue reading",
+    "subscribe now",
+    "join our newsletter",
+    "follow us on",
 ]
 
 # Lines containing these → remove the individual line
@@ -430,11 +567,17 @@ _BOILERPLATE_LINE_RE = re.compile(
     r"공감|칭찬|감사|웃김|놀람|슬픔|"
     # Naver thumbnail grid artifacts
     r"pstatic\.net|postfiles|blogfiles|storep-phinf|"
-    # Platform nav
-    r"Skip to main content|Sign up|Log in|Subscribe|"
-    r"Cookie|Privacy Policy|Terms of Service|"
+    # Platform nav / auth / legal
+    r"Skip to main content|Skip to content|Sign up|Log in|Subscribe|"
+    r"Cookie|Privacy Policy|Terms of Service|Terms of Use|"
+    r"All Rights Reserved|©\s*\d{4}|"
+    # Medium / Substack / Ghost
+    r"Member-only story|Open in app|Listen to this article|"
+    r"Share this post|Give this article|Clap|Follow|"
     # Tistory / Daum
     r"티스토리툴바|다음\s*블로그|"
+    # Velog
+    r"시리즈\s*에\s*추가|"
     # Image-only lines (usually thumbnails/ads)
     r"!\[.*?\]\(https?://.*?(?:pstatic|daumcdn|tistorycdn|blogpay).*?\)"
     r").*$",
@@ -503,6 +646,113 @@ def _clean_markdown(text: str) -> str:
     # --- Phase 4: Final whitespace normalization ---
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# AI conversation cleanup (Claude, ChatGPT, Gemini, etc.)
+# ---------------------------------------------------------------------------
+
+# Platform disclaimer patterns — each captures participant name in group(1).
+_CONVERSATION_DISCLAIMERS = [
+    # Claude: "This is a copy of a chat between Claude and **Name**. Content may..."
+    re.compile(
+        r"^.*this is a (?:copy|snapshot) of a (?:chat|conversation) between claude and \*{0,2}([^.*\n]+?)\*{0,2}\..*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # ChatGPT: "This is a copy of a conversation between ChatGPT & **Name**."
+    re.compile(
+        r"^.*this is a (?:copy|snapshot) of a conversation between chatgpt (?:&|and) \*{0,2}([^.*\n]+?)\*{0,2}\..*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # Generic: "Shared conversation with <AI name>"
+    re.compile(
+        r"^.*shared (?:chat|conversation) (?:with|between) .+? (?:&|and) \*{0,2}([^.*\n]+?)\*{0,2}\..*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+]
+
+# Report / abuse button lines (all platforms)
+_REPORT_LINE_RE = re.compile(
+    r"^\s*(?:Report|Report conversation|Report content|Flag|신고)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# AI platform action indicator lines
+_AI_ACTION_RE = re.compile(
+    r"^\s*(?:"
+    # Claude actions
+    r"Searched the web|Viewed (?:a |)file|Created (?:a |)file|Read (?:a |)file"
+    r"|Edited (?:a |)file|Ran code|Analyzed|Thinking"
+    # ChatGPT actions
+    r"|Searching the web|Browsing the web|Analyzing (?:image|data|file)"
+    r"|Used (?:a |)tool|Generated (?:an? |)image|Calling (?:a |)function"
+    # Perplexity source counts
+    r"|\d+ sources?"
+    r")"
+    r".*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# ChatGPT speaker labels — normalize to cleaner format
+_CHATGPT_SPEAKER_RE = re.compile(
+    r"^####\s+(You|ChatGPT)\s+said:\s*$",
+    re.MULTILINE,
+)
+
+# Sidebar / nav / login CTA lines common to AI platforms
+_AI_NAV_RE = re.compile(
+    r"^.*("
+    r"Skip to content|New chat|Search chats|Chat history|See plans and pricing"
+    r"|Deep research|Sign up for free|Log in|Voice$"
+    r"|New thread|Ctrl\s*[A-Z]|⌥⌃"
+    r").*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _is_conversation_url(url: str) -> bool:
+    """Check if URL is from a conversation-sharing AI platform."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in _CONVERSATION_HOSTS:
+        return False
+    path = parsed.path.lower()
+    # Must have a share/page path — not a homepage or docs page
+    return any(seg in path for seg in ("/share/", "/page/", "/search/", "/c/"))
+
+
+def _clean_conversation(text: str) -> tuple[str, str]:
+    """Clean AI conversation boilerplate from any platform.
+
+    Returns (cleaned_text, participant_name).
+    Works for Claude, ChatGPT, Gemini, Perplexity, etc.
+    """
+    participant = ""
+
+    # 1. Extract participant from disclaimer header and remove it
+    for pattern in _CONVERSATION_DISCLAIMERS:
+        m = pattern.search(text)
+        if m:
+            participant = m.group(1).strip().strip("*")
+            text = text[:m.start()] + text[m.end():]
+            break
+
+    # 2. Remove report button lines
+    text = _REPORT_LINE_RE.sub("", text)
+
+    # 3. Remove AI action indicator lines
+    text = _AI_ACTION_RE.sub("", text)
+
+    # 4. Remove sidebar / nav / CTA lines
+    text = _AI_NAV_RE.sub("", text)
+
+    # 5. Normalize ChatGPT speaker labels: "#### You said:" → "**You:**"
+    text = _CHATGPT_SPEAKER_RE.sub(r"**\1:**", text)
+
+    # 6. Collapse excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    return text, participant
 
 
 # ---------------------------------------------------------------------------

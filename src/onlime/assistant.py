@@ -235,7 +235,7 @@ async def _tool_search_vault(
     params: dict[str, Any],
     vault_search: Any | None,
 ) -> str:
-    """Search vault via FTS5."""
+    """Search vault via hybrid search (FTS5 + semantic)."""
     if vault_search is None:
         return "검색 엔진이 초기화되지 않았습니다."
 

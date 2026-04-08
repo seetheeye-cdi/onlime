@@ -136,10 +136,10 @@ class LLMSettings(BaseModel):
 
 class SearchSettings(BaseModel):
     db_path: str = "~/.onlime/lancedb"
-    embedding_model: str = "BAAI/bge-m3"
-    chunk_max_tokens: int = 512
+    embedding_model: str = "nomic-embed-text"
+    ollama_url: str = "http://localhost:11434"
+    use_semantic: bool = True
     search_top_k: int = 10
-    rerank_top_k: int = 5
 
 
 class RoutingSettings(BaseModel):

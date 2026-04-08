@@ -86,6 +86,21 @@ async def _run() -> None:
     vault_search = VaultSearch(store.db)
     await vault_search.ensure_schema()
 
+    # Semantic search (graceful: skip if Ollama unavailable)
+    semantic_search = None
+    hybrid_search = None
+    if settings.search.use_semantic:
+        from onlime.search.semantic import SemanticSearch
+        semantic_search = SemanticSearch()
+        if await semantic_search.check_available():
+            click.echo("Semantic search (Ollama) available.")
+        else:
+            click.echo("Semantic search unavailable (Ollama not running). FTS5 only.")
+            semantic_search = None
+
+    from onlime.search.hybrid import HybridSearch
+    hybrid_search = HybridSearch(vault_search, semantic_search)
+
     # === Background tasks — declarative list ===
     _bg_tasks: list[tuple[str, object, bool]] = [
         # (label, instance, enabled)
@@ -105,8 +120,8 @@ async def _run() -> None:
             settings.gcal.enabled,
         ),
         (
-            "Vault FTS5 indexer (every 10 min)",
-            VaultIndexTask(interval_seconds=600, search=vault_search),
+            "Vault indexer (every 10 min, FTS5 + semantic)",
+            VaultIndexTask(interval_seconds=600, search=vault_search, semantic=semantic_search),
             True,
         ),
     ]
@@ -159,7 +174,7 @@ async def _run() -> None:
             # Telegram-specific wiring
             if cls_name == "TelegramConnector":
                 engine.set_telegram_app(conn._app)
-                conn.set_vault_search(vault_search)
+                conn.set_vault_search(hybrid_search)
             click.echo(f"{label} started.")
         except Exception as exc:
             click.echo(f"{label} failed to start: {exc}")

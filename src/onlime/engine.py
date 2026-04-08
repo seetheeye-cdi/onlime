@@ -265,8 +265,26 @@ class Engine:
             # Reclassify ContentType so categorizer routes correctly
             if web_source_type == "youtube":
                 raw.content_type = ContentType.VIDEO
-            elif web_source_type in ("article", "newsletter", "blog"):
+            elif web_source_type in (
+                "article", "newsletter", "blog", "conversation",
+                "research", "community",
+            ):
                 raw.content_type = ContentType.ARTICLE
+            # Generate meaningful title for conversations with generic titles
+            if web_source_type == "conversation":
+                web_title = extra_fm.get("web_title", "")
+                _generic = {"claude", "chatgpt", "shared chat", "shared conversation", ""}
+                if (
+                    not web_title
+                    or web_title.lower().strip() in _generic
+                    or "share" in web_title.lower()
+                    or web_title == urls[0]
+                ):
+                    generated = await generate_title(full_text)
+                    if generated:
+                        extra_fm["web_title"] = generated
+                # Remove boilerplate description from share pages
+                extra_fm.pop("description", None)
             logger.info(
                 "engine.web_done", event_id=event_id,
                 url=urls[0], source_type=web_source_type,
@@ -403,19 +421,40 @@ class Engine:
             hashtags.extend(raw.metadata.get("hashtags", []))
             people: list[str] = []
 
+            # Calendar matching for voice recordings
+            meeting_event: dict[str, Any] | None = None
+            if raw.content_type == ContentType.VOICE and recording_info.get("recorded_at"):
+                try:
+                    from onlime.connectors.gcal import find_overlapping_event
+                    meeting_event = await find_overlapping_event(raw.timestamp)
+                except Exception:
+                    logger.warning("engine.gcal_lookup_failed", event_id=event_id)
+
             if raw.content_type == ContentType.PHOTO:
                 title = f"{extra_fm.get('vision_title', '사진')}-사진"
                 logger.info("engine.photo_title", event_id=event_id, title=title)
             elif raw.content_type == ContentType.VOICE and full_text and full_text != raw.raw_content:
-                generated = await generate_title(full_text)
                 contact = recording_info.get("contact")
                 rec_type = recording_info.get("type", "voice_memo")
                 if contact:
                     people.append(contact)
-                topic = generated or _make_title(raw)
-                type_suffix = "통화" if rec_type == "call" else "메모"
-                title = f"{topic}-음성-{type_suffix}"
-                logger.info("engine.title_generated", event_id=event_id, title=title)
+
+                if meeting_event:
+                    # Meeting recording: use calendar event info
+                    extra_fm["meeting_title"] = meeting_event["summary"]
+                    if meeting_event.get("attendees"):
+                        extra_fm["attendees"] = meeting_event["attendees"]
+                    if meeting_event.get("project"):
+                        extra_fm["project"] = meeting_event["project"]
+                    recording_info["type"] = "meeting"
+                    title = f"{meeting_event['summary']}-음성-미팅"
+                    logger.info("engine.meeting_matched", event_id=event_id, title=title)
+                else:
+                    generated = await generate_title(full_text)
+                    topic = generated or _make_title(raw)
+                    type_suffix = "통화" if rec_type == "call" else "메모"
+                    title = f"{topic}-음성-{type_suffix}"
+                    logger.info("engine.title_generated", event_id=event_id, title=title)
 
             if keywords:
                 from onlime.processors.keywords import to_wikilinks
@@ -437,10 +476,19 @@ class Engine:
             if raw.content_type == ContentType.VOICE:
                 try:
                     time_str = raw.timestamp.strftime("%H:%M")
-                    emoji = "📞" if recording_info.get("type") == "call" else "🎙️"
+                    rec_type = recording_info.get("type", "voice_memo")
+                    if rec_type == "meeting":
+                        emoji = "📅"
+                    elif rec_type == "call":
+                        emoji = "📞"
+                    else:
+                        emoji = "🎙️"
                     note_link = f"[[{note_path.stem}]]"
                     first_sentence = summary.split("\n", 1)[0][:80] if summary else ""
                     entry = f"- {time_str} {emoji} {note_link} — {first_sentence}"
+                    # Append project wikilink if meeting has a project
+                    if rec_type == "meeting" and extra_fm.get("project"):
+                        entry += f" [[{extra_fm['project']}]]"
                     append_to_daily_note(vault_root, raw.timestamp, entry, note_link)
                 except Exception:
                     logger.warning("engine.daily_note_failed", event_id=event_id)

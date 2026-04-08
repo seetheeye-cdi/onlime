@@ -1,5 +1,7 @@
 """Vault search infrastructure."""
 
 from onlime.search.fts import VaultSearch
+from onlime.search.hybrid import HybridSearch
+from onlime.search.semantic import SemanticSearch
 
-__all__ = ["VaultSearch"]
+__all__ = ["HybridSearch", "SemanticSearch", "VaultSearch"]

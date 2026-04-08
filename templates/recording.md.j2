@@ -1,6 +1,14 @@
 # {{ event.title }}
 
-{% if frontmatter.people is defined and frontmatter.people %}
+{% if frontmatter.meeting_title is defined %}
+> 일정: {{ frontmatter.meeting_title }}
+{% if frontmatter.attendees is defined and frontmatter.attendees %}
+> 참석자: {{ frontmatter.attendees | join(', ') }}
+{% endif %}
+{% if frontmatter.project is defined and frontmatter.project %}
+> 프로젝트: [[{{ frontmatter.project }}]]
+{% endif %}
+{% elif frontmatter.people is defined and frontmatter.people %}
 {% for person in frontmatter.people %}
 > 통화 상대: {{ person }}
 {% endfor %}
