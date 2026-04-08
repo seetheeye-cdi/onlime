@@ -15,10 +15,10 @@ logger = structlog.get_logger()
 
 
 def _replace_schedule_section(content: str, schedule_text: str) -> str:
-    """Replace the '## 오늘의 일정' section content in a daily note.
+    """Replace the '## 일정' section content in a daily note.
 
-    Preserves everything before and after the section. Replaces the section
-    body (up to the next ## heading) with schedule_text.
+    Preserves everything before and after the section (including ---
+    separators). Replaces the section body with schedule_text.
     """
     lines = content.split("\n")
     new_lines: list[str] = []
@@ -26,14 +26,15 @@ def _replace_schedule_section(content: str, schedule_text: str) -> str:
     replaced = False
 
     while i < len(lines):
-        if lines[i].strip() == "## 오늘의 일정" and not replaced:
+        if lines[i].strip() in ("## 일정", "## 오늘의 일정") and not replaced:
+            lines[i] = "## 일정"  # normalize old name
             new_lines.append(lines[i])
             new_lines.append("")
             new_lines.append(schedule_text)
             new_lines.append("")
-            # Skip old section body until next ## or end
+            # Skip old section body until --- or ## or end
             i += 1
-            while i < len(lines) and not lines[i].startswith("## "):
+            while i < len(lines) and not lines[i].startswith("## ") and lines[i].strip() != "---":
                 i += 1
             replaced = True
             continue
@@ -43,7 +44,7 @@ def _replace_schedule_section(content: str, schedule_text: str) -> str:
     if not replaced:
         # Section not found — append it
         new_lines.append("")
-        new_lines.append("## 오늘의 일정")
+        new_lines.append("## 일정")
         new_lines.append("")
         new_lines.append(schedule_text)
         new_lines.append("")
@@ -88,14 +89,8 @@ class GCalSyncTask(BackgroundTask):
         if daily_path.exists():
             content = daily_path.read_text(encoding="utf-8")
         else:
-            # Create from template
-            from onlime.outputs.vault import _get_template_env
-            env = _get_template_env()
-            try:
-                template = env.get_template("daily_note.md.j2")
-                content = template.render(frontmatter={"date": date_str})
-            except Exception:
-                content = f"# {date_str}\n\n## 오늘의 일정\n\n## 오늘의 기록\n\n## Daily Summary\n"
+            from onlime.outputs.vault import render_daily_note
+            content = render_daily_note(date_str)
 
         updated = _replace_schedule_section(content, schedule_text)
         atomic_write(daily_path, updated)

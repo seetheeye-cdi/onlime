@@ -1,13 +1,35 @@
-# {{ frontmatter.date }}
+---
+created: {{ frontmatter.date }}
+type: daily
+author:
+  - "[[최동인]]"
+index:
+  - "[[MOC Daily Notes]]"
+---
+#### [[{{ frontmatter.prev_date }} |◀︎]] {{ frontmatter.date }} [[{{ frontmatter.next_date }} |▶︎]]
+---
+## ==잡서
 
-## 오늘의 일정
+
+---
+## 일정
 
 > 일정이 자동으로 채워집니다.
 
-## 오늘의 기록
+---
+## 회고
 
-> 수집된 데이터가 자동으로 추가됩니다.
 
-## Daily Summary
-
-> 23:00에 AI 요약이 삽입됩니다.
+---
+#### 생성
+```dataview
+list
+from ""
+where file.cday = date({{ frontmatter.date }}) AND !contains(file.folder, "2.OUTPUT/Daily")
+```
+#### 변형
+```dataview
+list
+from ""
+where file.mday = date({{ frontmatter.date }}) AND !contains(file.folder, "2.OUTPUT/Daily") AND file.cday != date({{ frontmatter.date }})
+```

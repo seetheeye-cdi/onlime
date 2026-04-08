@@ -111,6 +111,7 @@ async def get_events(
             )
             for item in result.get("items", []):
                 all_events.append(_normalize_event(item, cal_id))
+        all_events.sort(key=lambda e: e["start"])
         return all_events
 
     events = await asyncio.to_thread(_fetch)

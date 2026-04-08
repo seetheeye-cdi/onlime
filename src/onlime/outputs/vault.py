@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -132,13 +132,35 @@ def write_note(
     return note_path
 
 
+def render_daily_note(date_str: str) -> str:
+    """Render a new daily note from template with prev/next date navigation."""
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    prev_date = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    next_date = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    env = _get_template_env()
+    try:
+        template = env.get_template("daily_note.md.j2")
+        return template.render(frontmatter={
+            "date": date_str,
+            "prev_date": prev_date,
+            "next_date": next_date,
+        })
+    except Exception:
+        logger.warning("daily_note.template_failed")
+        return (
+            f"---\ncreated: {date_str}\ntype: daily\n---\n"
+            f"## ==잡서\n\n---\n## 일정\n\n---\n## 회고\n\n"
+        )
+
+
 def append_to_daily_note(
     vault_root: Path,
     date: datetime,
     entry_line: str,
     note_link: str,
 ) -> Path:
-    """Append an entry to the daily note's '## 오늘의 기록' section.
+    """Append an entry to the daily note's '## ==잡서' section.
 
     Creates the daily note from template if it doesn't exist.
     Skips if the same note_link is already present (dedup).
@@ -152,22 +174,17 @@ def append_to_daily_note(
     if daily_path.exists():
         content = daily_path.read_text(encoding="utf-8")
     else:
-        # Create from template
-        env = _get_template_env()
-        try:
-            template = env.get_template("daily_note.md.j2")
-            content = template.render(frontmatter={"date": date_str})
-        except Exception:
-            logger.warning("daily_note.template_failed")
-            content = f"# {date_str}\n\n## 오늘의 일정\n\n## 오늘의 기록\n\n## Daily Summary\n"
+        content = render_daily_note(date_str)
 
     # Dedup: skip if this note link already exists
     if note_link in content:
         logger.info("daily_note.already_linked", link=note_link)
         return daily_path
 
-    # Find '## 오늘의 기록' section and insert entry
-    section_header = "## 오늘의 기록"
+    # Find '## ==잡서' section and insert entry (also handle legacy '## 오늘의 기록')
+    section_header = "## ==잡서"
+    # Normalize legacy section name
+    content = content.replace("## 오늘의 기록", section_header, 1)
     if section_header not in content:
         # Append section if missing
         content = content.rstrip() + f"\n\n{section_header}\n\n{entry_line}\n"
@@ -179,17 +196,12 @@ def append_to_daily_note(
         while i < len(lines):
             new_lines.append(lines[i])
             if lines[i].strip() == section_header and not inserted:
-                # Skip placeholder line if present
-                if i + 1 < len(lines) and "수집된 데이터가" in lines[i + 1]:
-                    i += 1  # skip placeholder
-                # Find the end of existing entries (before next ## or end)
                 i += 1
-                while i < len(lines) and lines[i].strip() and not lines[i].startswith("## "):
+                # Collect existing entries until --- or ## heading or end
+                while i < len(lines) and not lines[i].startswith("## ") and lines[i].strip() != "---":
                     new_lines.append(lines[i])
                     i += 1
-                # Insert blank line before entry if needed
-                if new_lines[-1].strip() != "" and new_lines[-1].strip() != section_header:
-                    pass  # entries are contiguous
+                # Insert new entry before separator
                 new_lines.append(entry_line)
                 inserted = True
                 continue
