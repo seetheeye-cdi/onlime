@@ -192,8 +192,26 @@ async def delete_event(
     return result
 
 
+def _detect_project(ev: dict[str, Any]) -> str | None:
+    """Detect project from calendar_id or event summary keywords."""
+    settings = get_settings()
+
+    # 1. Calendar-level label
+    cal_label = settings.gcal.calendar_labels.get(ev.get("calendar_id", ""))
+    if cal_label:
+        return cal_label
+
+    # 2. Keyword match in summary
+    summary = ev.get("summary", "")
+    for keyword, project in settings.gcal.project_keywords.items():
+        if keyword.lower() in summary.lower():
+            return project
+
+    return None
+
+
 def format_events_text(events: list[dict[str, Any]]) -> str:
-    """Format events list as Korean text for Telegram responses."""
+    """Format events list as Korean text for daily note / Telegram."""
     if not events:
         return "일정이 없습니다."
 
@@ -212,6 +230,11 @@ def format_events_text(events: list[dict[str, Any]]) -> str:
         line = f"- {time_part} {ev['summary']}"
         if ev.get("location"):
             line += f" ({ev['location']})"
+
+        project = _detect_project(ev)
+        if project:
+            line += f" — [[{project}]]"
+
         lines.append(line)
 
     return "\n".join(lines)

@@ -93,6 +93,8 @@ class GDriveSettings(BaseModel):
 class GCalSettings(BaseModel):
     enabled: bool = True
     calendar_ids: list[str] = Field(default_factory=lambda: ["primary"])
+    calendar_labels: dict[str, str] = Field(default_factory=dict)
+    project_keywords: dict[str, str] = Field(default_factory=dict)
     schedule_minutes: int = 15
     sync_days_forward: int = 1
     creds_file: str = "~/.onlime/credentials.json"
