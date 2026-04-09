@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Final
 
@@ -37,6 +38,7 @@ _CHUNK_SIZE: Final[int] = 3000
 _CHUNK_OVERLAP: Final[int] = 150  # preserve sentence boundary between chunks
 _MIN_PROOFREAD_LENGTH: Final[int] = 120
 _MAX_OUTPUT_TOKENS: Final[int] = 8192
+_PARALLEL_PROOFREAD_LIMIT: Final[int] = 2
 
 _SYSTEM_PROMPT: Final[str] = (
     "당신은 음성 인식 결과를 교정하는 전문가입니다. "
@@ -136,16 +138,24 @@ async def proofread_transcript(transcript: str) -> str:
     chunks = _split_chunks(transcript)
     logger.info("proofread.start", chars=len(transcript), chunks=len(chunks))
 
-    results: list[str] = []
-    for i, chunk in enumerate(chunks):
+    semaphore = asyncio.Semaphore(_PARALLEL_PROOFREAD_LIMIT)
+
+    async def _proofread_one(i: int, chunk: str) -> tuple[int, str]:
         try:
-            corrected = await _call_claude(chunk)
+            async with semaphore:
+                corrected = await _call_claude(chunk)
             corrected = _strip_markdown_artifacts(corrected)
-            results.append(corrected)
             logger.info("proofread.chunk_ok", idx=i, in_chars=len(chunk), out_chars=len(corrected))
+            return i, corrected
         except Exception:
             logger.warning("proofread.chunk_failed", idx=i)
-            results.append(format_one_sentence_per_line(chunk))
+            return i, format_one_sentence_per_line(chunk)
+
+    completed = await asyncio.gather(
+        *(_proofread_one(i, chunk) for i, chunk in enumerate(chunks))
+    )
+    completed.sort(key=lambda item: item[0])
+    results = [text for _, text in completed]
 
     combined = "\n".join(results)
     return format_one_sentence_per_line(combined)

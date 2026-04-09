@@ -19,6 +19,7 @@ from onlime.processors.name_resolver import (
     resolve_keywords,
     resolve_wikilinks,
 )
+from onlime.processors.people_resolver import PeopleResolver
 from onlime.processors.action_items import extract_action_items, format_action_items_daily
 from onlime.processors.summarizer import MIN_SUMMARIZE_LENGTH, generate_title, summarize
 from onlime.state.store import StateStore
@@ -84,17 +85,46 @@ def _make_title(raw: RawEvent) -> str:
     return first_line[:60]
 
 
+class _RoutingQueue:
+    """Duck-typed asyncio.Queue that routes events to fast or heavy lane.
+
+    Messages go to the fast lane, links to the web lane, and everything else
+    to the heavy lane so web extraction is not blocked behind STT/backfills.
+    """
+
+    _FAST_TYPES = {"message"}
+    _WEB_TYPES = {"link"}
+
+    def __init__(self) -> None:
+        self.fast: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.web: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.heavy: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def put(self, event: dict[str, Any]) -> None:
+        ct = event.get("content_type", "")
+        if ct in self._FAST_TYPES:
+            await self.fast.put(event)
+        elif ct in self._WEB_TYPES:
+            await self.web.put(event)
+        else:
+            await self.heavy.put(event)
+
+    def task_done(self) -> None:
+        pass  # each sub-queue handles its own
+
+
 class Engine:
     """Async event processing engine with worker pool."""
 
     def __init__(self, state: StateStore) -> None:
         self.state = state
-        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.queue = _RoutingQueue()
         self._workers: list[asyncio.Task[None]] = []
         self._running = False
         self._telegram_app: Any = None  # for sending confirmations
         self._redirect_base_url: str | None = None  # http bridge for obsidian:// links
         self._name_index = VaultNameIndex()  # canonical wikilink resolver
+        self._people_resolver = PeopleResolver(self._name_index)
 
     def set_telegram_app(self, app: Any) -> None:
         """Store reference to Telegram app for sending confirmations."""
@@ -104,15 +134,32 @@ class Engine:
         """Store the base URL of the local HTTP→obsidian:// redirect bridge."""
         self._redirect_base_url = base_url.rstrip("/")
 
-    async def start(self, num_workers: int = 2) -> None:
+    async def start(self, num_heavy_workers: int = 3, num_web_workers: int = 2) -> None:
         self._running = True
         # Build vault name index for wikilink canonicalization
         settings = get_settings()
         await asyncio.to_thread(self._name_index.build, settings.vault.root)
-        for i in range(num_workers):
-            task = asyncio.create_task(self._worker(f"worker-{i}"))
+        # Build people resolver (phone/email/alias → canonical name)
+        await asyncio.to_thread(self._people_resolver.build, settings.vault.root)
+        # 1 fast worker for messages, dedicated web workers for link extraction,
+        # plus heavy workers for STT and other long-running jobs.
+        fast_task = asyncio.create_task(self._worker("fast-worker", self.queue.fast))
+        self._workers.append(fast_task)
+        for i in range(num_web_workers):
+            task = asyncio.create_task(self._worker(f"web-worker-{i}", self.queue.web))
             self._workers.append(task)
-        logger.info("engine.started", workers=num_workers, name_index=self._name_index.size)
+        for i in range(num_heavy_workers):
+            task = asyncio.create_task(self._worker(f"worker-{i}", self.queue.heavy))
+            self._workers.append(task)
+        total = 1 + num_web_workers + num_heavy_workers
+        logger.info(
+            "engine.started",
+            workers=total,
+            fast=1,
+            web=num_web_workers,
+            heavy=num_heavy_workers,
+            name_index=self._name_index.size,
+        )
 
     async def stop(self) -> None:
         self._running = False
@@ -125,11 +172,11 @@ class Engine:
     async def submit(self, event: dict[str, Any]) -> None:
         await self.queue.put(event)
 
-    async def _worker(self, name: str) -> None:
+    async def _worker(self, name: str, q: asyncio.Queue[dict[str, Any]]) -> None:
         logger.info("worker.started", worker=name)
         while self._running:
             try:
-                event = await asyncio.wait_for(self.queue.get(), timeout=5.0)
+                event = await asyncio.wait_for(q.get(), timeout=5.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -137,10 +184,10 @@ class Engine:
 
             try:
                 await self._process(event)
-                self.queue.task_done()
+                q.task_done()
             except Exception:
                 logger.exception("worker.error", worker=name, event_id=event.get("id"))
-                self.queue.task_done()
+                q.task_done()
 
     # ------------------------------------------------------------------
     # Content-type enrichment helpers
@@ -496,23 +543,33 @@ class Engine:
                 contact = recording_info.get("contact")
                 rec_type = recording_info.get("type", "voice_memo")
                 if contact:
-                    people.append(contact)
+                    resolved_contact = self._people_resolver.resolve(contact) or contact
+                    people.append(resolved_contact)
 
                 if meeting_event:
                     # Meeting recording: use calendar event info
                     extra_fm["meeting_title"] = meeting_event["summary"]
                     if meeting_event.get("attendees"):
-                        extra_fm["attendees"] = meeting_event["attendees"]
+                        raw_attendees = meeting_event["attendees"]
+                        for att in raw_attendees:
+                            resolved_att = self._people_resolver.resolve(att)
+                            if resolved_att and resolved_att not in people:
+                                people.append(resolved_att)
+                        extra_fm["attendees"] = [
+                            self._people_resolver.resolve(a) or a for a in raw_attendees
+                        ]
                     if meeting_event.get("project"):
                         extra_fm["project"] = meeting_event["project"]
                     recording_info["type"] = "meeting"
-                    title = f"{meeting_event['summary']}-음성-미팅"
+                    date_prefix = raw.timestamp.strftime("%Y-%m-%d")
+                    title = f"{date_prefix} {meeting_event['summary']}-음성-미팅"
                     logger.info("engine.meeting_matched", event_id=event_id, title=title)
                 else:
                     generated = await generate_title(full_text)
                     topic = generated or _make_title(raw)
                     type_suffix = "통화" if rec_type == "call" else "메모"
-                    title = f"{topic}-음성-{type_suffix}"
+                    date_prefix = raw.timestamp.strftime("%Y-%m-%d")
+                    title = f"{date_prefix} {topic}-음성-{type_suffix}"
                     logger.info("engine.title_generated", event_id=event_id, title=title)
 
             if keywords:
@@ -525,7 +582,8 @@ class Engine:
             processed = ProcessedEvent(
                 raw_event_id=raw.id, title=title, summary=summary,
                 full_text=full_text, category=category, timestamp=raw.timestamp,
-                tags=list(set(hashtags)), people=people,
+                tags=list(set(hashtags)),
+                people=self._people_resolver.resolve_people_list(people),
             )
 
             # 6. Write to vault
