@@ -1,0 +1,84 @@
+# Onlime personal context — injected into LLM system prompts.
+# To activate: cp personal_context.example.yaml ~/.onlime/personal_context.yaml
+# Edit to match your own facts. Reload is automatic based on file mtime.
+version: 1
+
+facts:
+  # --- 관계 (private, 내부 해결만) ---
+  - key: partner_current
+    value: "김단영"
+    category: relationship
+    priority: 100
+    visibility: internal
+    notes: "현재 파트너"
+
+  - key: partner_ex_혀나
+    value: "혀나 = 송현아 = 전 여자친구 (2024년 이전)"
+    category: relationship
+    priority: 95
+    visibility: internal
+    notes: "요약/브리핑 출력엔 표시 금지, 어시스턴트 판단용으로만 사용"
+
+  # --- 프로젝트 온톨로지 ---
+  - key: primary_goal
+    value: "AI당 24개월 로드맵 — 모든 프로젝트는 이 산하의 퍼즐 조각"
+    category: ontology
+    priority: 100
+    visibility: public
+
+  - key: onlime_role
+    value: "Onlime = 퍼즐 전체 진행상황의 수집·처리·산출 인프라 (개인 도구 아님)"
+    category: ontology
+    priority: 90
+    visibility: public
+
+  - key: layer_01_research
+    value: "AI Politics Lab (AIPL) — 한성, future prediction, nextnobel.org"
+    category: project
+    priority: 85
+
+  - key: layer_02_network
+    value: "더해커톤 THEHACK — 스타트업 인맥 레이어"
+    category: project
+    priority: 85
+
+  - key: layer_03_legal
+    value: "보로메오 / AILawfirm — 법률 인프라 + 현금흐름"
+    category: project
+    priority: 85
+
+  - key: layer_04_public_ax
+    value: "참치상사 — chamchi.kr, AI Call Center, 공공 AX 실행 경험"
+    category: project
+    priority: 85
+
+  - key: cross_opportunity
+    value: "AX 마켓플레이스 (보로메오+참치+더해커톤 교차 탐색 중)"
+    category: project
+    priority: 70
+
+  - key: vault_structure
+    value: "Obsidian_sinc 3-tier: 0.SYSTEM / 1.INPUT / 2.OUTPUT"
+    category: ontology
+    priority: 70
+
+  # --- 작업 선호 ---
+  - key: language
+    value: "한국어 (짧고 직접적)"
+    category: preference
+    priority: 80
+    visibility: public
+
+  - key: sentence_per_line
+    value: "대본/요약/STT 출력은 한 문장 한 줄"
+    category: preference
+    priority: 75
+
+  - key: wikilink_format
+    value: "고유명사 첫 등장은 [[한국어 English]] (순한국어는 한국어만)"
+    category: preference
+    priority: 75
+
+aliases:
+  혀나: 송현아
+  동인: 최동인

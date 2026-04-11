@@ -27,6 +27,12 @@ def _is_authorized(user_id: int) -> bool:
     return not allowed or user_id in allowed
 
 
+async def _reply_unauthorized(update: Update) -> None:
+    """Reply with a consistent auth failure message when possible."""
+    if update.message:
+        await update.message.reply_text("인증되지 않은 사용자입니다.")
+
+
 def _detect_content_type(text: str) -> ContentType:
     """Detect if message contains a URL."""
     import re
@@ -73,6 +79,12 @@ class TelegramConnector(BaseConnector):
         self._vault_search: Any = None
         self._vault_graph: Any = None
         self._store: Any = None
+        self._name_index: Any = None
+        self._people_resolver: Any = None
+        self._personal_context_store: Any = None
+        self._people_crm: Any = None
+        self._action_lifecycle: Any = None
+        self._synthesizer: Any = None
 
     def set_vault_search(self, search: Any) -> None:
         """Inject vault search instance (called from cli.py)."""
@@ -85,6 +97,30 @@ class TelegramConnector(BaseConnector):
     def set_store(self, store: Any) -> None:
         """Inject state store for action item callbacks (called from cli.py)."""
         self._store = store
+
+    def set_name_index(self, idx: Any) -> None:
+        """Inject VaultNameIndex for read_note fuzzy matching (called from cli.py)."""
+        self._name_index = idx
+
+    def set_people_resolver(self, resolver: Any) -> None:
+        """Inject PeopleResolver for person lookup (called from cli.py)."""
+        self._people_resolver = resolver
+
+    def set_personal_context_store(self, pc: Any) -> None:
+        """Inject PersonalContextStore for LLM prompt injection (called from cli.py)."""
+        self._personal_context_store = pc
+
+    def set_people_crm(self, crm: Any) -> None:
+        """Inject PeopleCRM for person interaction tracking (called from cli.py)."""
+        self._people_crm = crm
+
+    def set_action_lifecycle(self, al: Any) -> None:
+        """Inject ActionLifecycle for task FSM (called from cli.py)."""
+        self._action_lifecycle = al
+
+    def set_synthesizer(self, syn: Any) -> None:
+        """Inject Synthesizer for multi-note synthesis (called from cli.py)."""
+        self._synthesizer = syn
 
     def fetch(self, **kwargs: Any) -> list:
         """Not used for push-based connector."""
@@ -159,7 +195,24 @@ class TelegramConnector(BaseConnector):
         """Route text messages: URL/hashtag → vault save, else → AI assistant."""
         if not update.effective_user or not update.message or not update.message.text:
             return
-        if not _is_authorized(update.effective_user.id):
+        user_id = update.effective_user.id
+        chat = update.message.chat
+        authorized = _is_authorized(user_id)
+        logger.info(
+            "telegram.text_received",
+            user=user_id,
+            chat_id=chat.id if chat else None,
+            chat_type=chat.type if chat else None,
+            text_len=len(update.message.text),
+            authorized=authorized,
+        )
+        if not authorized:
+            logger.warning(
+                "telegram.unauthorized_text",
+                user=user_id,
+                chat_id=chat.id if chat else None,
+            )
+            await _reply_unauthorized(update)
             return
 
         text = update.message.text
@@ -203,6 +256,7 @@ class TelegramConnector(BaseConnector):
 
         chat_id = update.message.chat_id  # type: ignore[union-attr]
         user_id = update.effective_user.id  # type: ignore[union-attr]
+        logger.info("telegram.assistant_started", user=user_id, chat_id=chat_id, text_len=len(text))
 
         # Send typing indicator
         await update.message.chat.send_action("typing")  # type: ignore[union-attr]
@@ -215,6 +269,12 @@ class TelegramConnector(BaseConnector):
                 engine_queue=self._queue,
                 vault_graph=self._vault_graph,
                 store=self._store,
+                name_index=self._name_index,
+                people_resolver=self._people_resolver,
+                personal_context_store=self._personal_context_store,
+                people_crm=self._people_crm,
+                action_lifecycle=self._action_lifecycle,
+                synthesizer=self._synthesizer,
             )
             if reply:
                 # Split long messages (Telegram 4096 char limit)
@@ -232,7 +292,10 @@ class TelegramConnector(BaseConnector):
         query = update.callback_query
         if not query or not query.data:
             return
-        if not query.from_user or not _is_authorized(query.from_user.id):
+        if not query.from_user:
+            return
+        if not _is_authorized(query.from_user.id):
+            logger.warning("telegram.unauthorized_callback", user=query.from_user.id, data=query.data)
             await query.answer("인증되지 않은 사용자입니다.")
             return
 
@@ -300,6 +363,12 @@ class TelegramConnector(BaseConnector):
         if not update.effective_user or not update.message:
             return
         if not _is_authorized(update.effective_user.id):
+            logger.warning(
+                "telegram.unauthorized_voice",
+                user=update.effective_user.id,
+                chat_id=update.message.chat_id,
+            )
+            await _reply_unauthorized(update)
             return
 
         voice = update.message.voice or update.message.audio

@@ -181,3 +181,42 @@ async def test_compose_meeting_brief_uses_llm_output_without_leaking_snippets(tm
     assert "→" not in text
     assert "[[" not in text
     assert "1.INPUT/Meeting" not in text
+
+
+@pytest.mark.asyncio
+async def test_build_meeting_context_infers_people_from_event_title(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(briefing, "get_settings", lambda: settings)
+
+    cho = tmp_path / "1.INPUT/People/조용민_더해커톤 후원, 언바운드랩 대표.md"
+    choi = tmp_path / "1.INPUT/People/최동인.md"
+    _write(cho, "# 조용민\n언바운드랩 대표")
+    _write(choi, "# 최동인\nOnlime 운영")
+
+    name_index = FakeNameIndex({
+        "조용민": ("조용민_더해커톤 후원, 언바운드랩 대표", cho),
+        "최동인": ("최동인", choi),
+    })
+    people_resolver = FakePeopleResolver({
+        "조용민": "조용민_더해커톤 후원, 언바운드랩 대표",
+        "최동인": "최동인",
+    })
+
+    context = await briefing.build_meeting_context(
+        {
+            "summary": "AX market : 조용민, 최동인",
+            "start": "2026-04-10T16:00:00+09:00",
+            "attendees": [],
+        },
+        vault_search=FakeSearch({}),
+        name_index=name_index,
+        people_resolver=people_resolver,
+    )
+
+    assert [person.display_name for person in context.attendees] == ["조용민", "최동인"]
+    assert context.attendees[0].tags == ["더해커톤 후원", "언바운드랩 대표"]
+
+
+def test_clean_brief_text_strips_obsidian_and_markdown_artifacts():
+    cleaned = briefing._clean_brief_text("> **[[최동인]]**이 [[조용민_더해커톤 후원, 언바운드랩 대표]]에게 전달")
+    assert cleaned == "최동인이 조용민 더해커톤 후원, 언바운드랩 대표에게 전달"

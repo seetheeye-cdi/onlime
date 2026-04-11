@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from onlime.llm import call_llm
+
+if TYPE_CHECKING:
+    from onlime.personal_context import PersonalContextStore
 
 logger = structlog.get_logger()
 
@@ -70,6 +73,7 @@ async def extract_action_items(
     text: str,
     source_note: str = "",
     meeting_context: dict[str, Any] | None = None,
+    personal_context_store: PersonalContextStore | None = None,
 ) -> list[dict[str, str]]:
     """Extract action items from text using LLM.
 
@@ -79,7 +83,17 @@ async def extract_action_items(
         return []
 
     context = _build_context(meeting_context)
-    prompt = _PROMPT.format(today=date.today().isoformat(), context=context, text=text[:8000])
+
+    personal_context_suffix = ""
+    from onlime.config import get_settings
+    settings = get_settings()
+    flags = getattr(settings, "feature_flags", None)
+    if flags and getattr(flags, "personal_context", False) and personal_context_store is not None:
+        personal_context_suffix = personal_context_store.build_system_suffix(
+            max_tokens=100, categories=["preference", "ontology"]
+        )
+
+    prompt = _PROMPT.format(today=date.today().isoformat(), context=context, text=text[:8000]) + personal_context_suffix
 
     raw = await call_llm(prompt, max_tokens=512, caller="action_items")
     items = _parse_action_items(raw)

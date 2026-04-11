@@ -173,6 +173,16 @@ class ServerSettings(BaseModel):
 class NamesSettings(BaseModel):
     known_contacts: list[str] = Field(default_factory=list)
     email_to_name: dict[str, str] = Field(default_factory=dict)
+    aliases: dict[str, str] = Field(default_factory=dict)
+    phone_to_name: dict[str, str] = Field(default_factory=dict)
+
+
+class FeatureFlags(BaseModel):
+    """Feature flags for quad-feature rollout. Flip in onlime.toml."""
+    personal_context: bool = False
+    people_crm:       bool = False
+    action_lifecycle: bool = False
+    synthesis:        bool = False
 
 
 # --- Root Settings ---
@@ -195,6 +205,7 @@ class Settings(BaseModel):
     scheduler: SchedulerSettings = SchedulerSettings()
     server: ServerSettings = ServerSettings()
     names: NamesSettings = NamesSettings()
+    feature_flags: FeatureFlags = FeatureFlags()
 
 
 def _find_config_file() -> Path | None:

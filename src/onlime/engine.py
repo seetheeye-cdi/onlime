@@ -20,6 +20,8 @@ from onlime.processors.name_resolver import (
     resolve_wikilinks,
 )
 from onlime.processors.people_resolver import PeopleResolver
+from onlime.processors.people_crm import PeopleCRM
+from onlime.processors.action_lifecycle import ActionLifecycle
 from onlime.processors.action_items import extract_action_items, format_action_items_daily
 from onlime.processors.summarizer import MIN_SUMMARIZE_LENGTH, generate_title, summarize
 from onlime.state.store import StateStore
@@ -125,6 +127,14 @@ class Engine:
         self._redirect_base_url: str | None = None  # http bridge for obsidian:// links
         self._name_index = VaultNameIndex()  # canonical wikilink resolver
         self._people_resolver = PeopleResolver(self._name_index)
+        self._people_crm: PeopleCRM | None = None  # wired in Phase 3 from cli.py
+        self._action_lifecycle: ActionLifecycle | None = None
+
+    def set_people_crm(self, crm: PeopleCRM) -> None:
+        self._people_crm = crm
+
+    def set_action_lifecycle(self, lifecycle: ActionLifecycle) -> None:
+        self._action_lifecycle = lifecycle
 
     def set_telegram_app(self, app: Any) -> None:
         """Store reference to Telegram app for sending confirmations."""
@@ -586,6 +596,20 @@ class Engine:
                 people=self._people_resolver.resolve_people_list(people),
             )
 
+            # People CRM integration (Phase 2 feature)
+            if self._people_crm is not None and processed.people:
+                _flags = getattr(get_settings(), "feature_flags", None)
+                if _flags and getattr(_flags, "people_crm", False):
+                    try:
+                        await self._people_crm.record_interactions_for_event(
+                            event_id=raw.id,
+                            people=processed.people,
+                            source_type=raw.source.value if hasattr(raw.source, "value") else str(raw.source),
+                            timestamp=raw.timestamp.isoformat() if hasattr(raw.timestamp, "isoformat") else str(raw.timestamp),
+                        )
+                    except Exception:
+                        logger.exception("engine.people_crm_failed", event_id=raw.id)
+
             # 6. Write to vault
             settings = get_settings()
             vault_root = settings.vault.root
@@ -643,18 +667,33 @@ class Engine:
                 import json as _json
                 for item in action_items:
                     item["source_note"] = note_path.stem
-                try:
-                    for item in action_items:
-                        task_id = await self.state.enqueue_task(
-                            "action_item", str(note_path), priority=3,
+                _flags = getattr(get_settings(), "feature_flags", None)
+                if (
+                    _flags
+                    and getattr(_flags, "action_lifecycle", False)
+                    and self._action_lifecycle is not None
+                ):
+                    try:
+                        await self._action_lifecycle.insert_from_extraction(
+                            items=action_items,
+                            event_id=raw.id,
+                            source_note_path=str(note_path),
                         )
-                        await self.state.db.execute(
-                            "UPDATE task_queue SET result = ? WHERE id = ?",
-                            (_json.dumps(item, ensure_ascii=False), task_id),
-                        )
-                    await self.state.db.commit()
-                except Exception:
-                    logger.warning("engine.action_items_save_failed", event_id=event_id)
+                    except Exception:
+                        logger.exception("engine.action_lifecycle_failed", event_id=event_id)
+                else:
+                    try:
+                        for item in action_items:
+                            task_id = await self.state.enqueue_task(
+                                "action_item", str(note_path), priority=3,
+                            )
+                            await self.state.db.execute(
+                                "UPDATE task_queue SET result = ? WHERE id = ?",
+                                (_json.dumps(item, ensure_ascii=False), task_id),
+                            )
+                        await self.state.db.commit()
+                    except Exception:
+                        logger.warning("engine.action_items_save_failed", event_id=event_id)
                 try:
                     from onlime.outputs.vault import append_to_daily_todo
                     append_to_daily_todo(vault_root, raw.timestamp, action_items)

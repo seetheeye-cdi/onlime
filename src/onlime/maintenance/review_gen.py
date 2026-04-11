@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -14,6 +14,9 @@ from onlime.llm import call_llm
 from onlime.outputs.vault import atomic_write
 from onlime.processors.name_resolver import VaultNameIndex, resolve_wikilinks
 from onlime.processors.summarizer import _SENTENCE_RULE, _WIKILINK_RULE, format_one_sentence_per_line
+
+if TYPE_CHECKING:
+    from onlime.personal_context import PersonalContextStore
 
 logger = structlog.get_logger()
 
@@ -116,6 +119,7 @@ async def generate_weekly_review(
     vault_root: Path,
     week_start: date,
     name_index: VaultNameIndex | None = None,
+    personal_context_store: PersonalContextStore | None = None,
 ) -> Path | None:
     """Generate a weekly review note from Mon-Sun daily notes.
 
@@ -147,11 +151,20 @@ async def generate_weekly_review(
 
     context = _build_context_text(daily_notes)
 
+    personal_context_suffix = ""
+    settings = get_settings()
+    flags = getattr(settings, "feature_flags", None)
+    if flags and getattr(flags, "personal_context", False) and personal_context_store is not None:
+        personal_context_suffix = personal_context_store.build_system_suffix(
+            max_tokens=120, categories=["project", "ontology", "preference"]
+        )
+
     # Generate AI summary
     summary_prompt = (
         "다음은 한 주간의 일일 노트입니다. "
         "이번 주에 있었던 주요 활동, 프로젝트 진행, 배운 점을 3~5문장으로 요약해주세요. "
         f"{_WIKILINK_RULE} {_SENTENCE_RULE}\n\n{context}"
+        + personal_context_suffix
     )
     ai_summary = await call_llm(summary_prompt, caller="weekly_review")
     ai_summary = format_one_sentence_per_line(ai_summary)
@@ -161,6 +174,7 @@ async def generate_weekly_review(
         "다음은 한 주간의 일일 노트입니다. "
         "이번 주를 돌아보며 잘한 점, 개선할 점, 다음 주에 집중할 것을 각 1~2문장으로 정리해주세요. "
         f"{_WIKILINK_RULE} {_SENTENCE_RULE}\n\n{context}"
+        + personal_context_suffix
     )
     ai_reflection = await call_llm(reflection_prompt, caller="weekly_review")
     ai_reflection = format_one_sentence_per_line(ai_reflection)
@@ -209,6 +223,7 @@ async def generate_monthly_review(
     year: int,
     month: int,
     name_index: VaultNameIndex | None = None,
+    personal_context_store: PersonalContextStore | None = None,
 ) -> Path | None:
     """Generate a monthly review note.
 
@@ -250,11 +265,20 @@ async def generate_monthly_review(
     if len(context) > 15000:
         context = context[:15000] + "\n\n... (이하 생략)"
 
+    personal_context_suffix = ""
+    settings = get_settings()
+    flags = getattr(settings, "feature_flags", None)
+    if flags and getattr(flags, "personal_context", False) and personal_context_store is not None:
+        personal_context_suffix = personal_context_store.build_system_suffix(
+            max_tokens=120, categories=["project", "ontology", "preference"]
+        )
+
     # Generate AI summary
     summary_prompt = (
         "다음은 한 달간의 일일 노트입니다. "
         "이번 달의 주요 활동, 프로젝트 진행, 핵심 성과를 5~8문장으로 요약해주세요. "
         f"{_WIKILINK_RULE} {_SENTENCE_RULE}\n\n{context}"
+        + personal_context_suffix
     )
     ai_summary = await call_llm(summary_prompt, caller="monthly_review")
     ai_summary = format_one_sentence_per_line(ai_summary)
@@ -264,6 +288,7 @@ async def generate_monthly_review(
         "다음은 한 달간의 일일 노트입니다. "
         "이번 달을 돌아보며 가장 큰 성취, 아쉬운 점, 다음 달 목표를 각 1~2문장으로 정리해주세요. "
         f"{_WIKILINK_RULE} {_SENTENCE_RULE}\n\n{context}"
+        + personal_context_suffix
     )
     ai_reflection = await call_llm(reflection_prompt, caller="monthly_review")
     ai_reflection = format_one_sentence_per_line(ai_reflection)

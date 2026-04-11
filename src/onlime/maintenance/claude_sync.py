@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -13,6 +14,9 @@ from onlime.config import get_settings
 from onlime.llm import LLMError, call_llm
 from onlime.maintenance.base import BackgroundTask
 from onlime.outputs.vault import atomic_write, render_daily_note
+
+if TYPE_CHECKING:
+    from onlime.personal_context import PersonalContextStore
 
 logger = structlog.get_logger()
 
@@ -140,6 +144,7 @@ class ClaudeSessionSync(BackgroundTask):
     def __init__(self, interval_seconds: int, db: object) -> None:
         super().__init__(interval_seconds)
         self._db = db  # aiosqlite.Connection
+        self.personal_context_store: PersonalContextStore | None = None
 
     async def _ensure_schema(self) -> None:
         await self._db.execute(_SCHEMA_DDL)
@@ -192,7 +197,18 @@ class ClaudeSessionSync(BackgroundTask):
 
     async def _summarize_session(self, conversation_text: str) -> str:
         """Summarize session conversation using Claude."""
-        prompt = _SUMMARY_PROMPT.format(text=conversation_text)
+        personal_context_suffix = ""
+        settings = get_settings()
+        flags = getattr(settings, "feature_flags", None)
+        if (
+            flags
+            and getattr(flags, "personal_context", False)
+            and self.personal_context_store is not None
+        ):
+            personal_context_suffix = self.personal_context_store.build_system_suffix(
+                max_tokens=80, categories=["preference"]
+            )
+        prompt = _SUMMARY_PROMPT.format(text=conversation_text) + personal_context_suffix
         try:
             return await call_llm(prompt, max_tokens=512, caller="claude_sync")
         except LLMError:

@@ -8,12 +8,15 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from onlime.config import get_settings
 from onlime.llm import LLMError, call_llm
+
+if TYPE_CHECKING:
+    from onlime.personal_context import PersonalContextStore
 
 logger = structlog.get_logger()
 
@@ -81,6 +84,7 @@ async def compose_meeting_brief(
     vault_search: Any | None = None,
     name_index: Any | None = None,
     people_resolver: Any | None = None,
+    personal_context_store: PersonalContextStore | None = None,
 ) -> str:
     """Build context, reconstruct the issue, and render a Telegram-safe brief."""
     context = await build_meeting_context(
@@ -89,7 +93,7 @@ async def compose_meeting_brief(
         name_index=name_index,
         people_resolver=people_resolver,
     )
-    reconstructed = await reconstruct_meeting_context(context)
+    reconstructed = await reconstruct_meeting_context(context, personal_context_store=personal_context_store)
     return render_meeting_brief(context, reconstructed)
 
 
@@ -103,8 +107,13 @@ async def build_meeting_context(
 ) -> MeetingContextPacket:
     """Collect normalized people and relevant note excerpts for an event."""
     title = str(event.get("summary", "(제목 없음)")).strip() or "(제목 없음)"
+    attendee_inputs = _collect_attendee_inputs(
+        event,
+        name_index=name_index,
+        people_resolver=people_resolver,
+    )
     attendees = await _resolve_attendees(
-        event.get("attendees", []),
+        attendee_inputs,
         name_index=name_index,
         people_resolver=people_resolver,
     )
@@ -124,11 +133,43 @@ async def build_meeting_context(
     )
 
 
+def _collect_attendee_inputs(
+    event: dict[str, Any],
+    *,
+    name_index: Any | None,
+    people_resolver: Any | None,
+) -> list[str]:
+    """Collect attendee identifiers from calendar data plus title/description hints."""
+    raw_attendees = [
+        str(attendee).strip()
+        for attendee in event.get("attendees", [])
+        if str(attendee or "").strip()
+    ]
+    inferred = _infer_people_from_event_text(event, name_index=name_index, people_resolver=people_resolver)
+
+    seen: set[str] = set()
+    combined: list[str] = []
+    for item in [*raw_attendees, *inferred]:
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            combined.append(item)
+    return combined
+
+
 async def reconstruct_meeting_context(
     context: MeetingContextPacket,
+    personal_context_store: PersonalContextStore | None = None,
 ) -> ReconstructedMeetingBrief:
     """Use an LLM to reconstruct the event context into an actionable brief."""
-    prompt = _build_llm_prompt(context)
+    personal_context_suffix = ""
+    settings = get_settings()
+    flags = getattr(settings, "feature_flags", None)
+    if flags and getattr(flags, "personal_context", False) and personal_context_store is not None:
+        personal_context_suffix = personal_context_store.build_system_suffix(
+            max_tokens=150, categories=["relationship", "project", "ontology"]
+        )
+    prompt = _build_llm_prompt(context, personal_context_suffix=personal_context_suffix)
     try:
         raw = await call_llm(
             prompt,
@@ -279,6 +320,76 @@ def _resolve_person(
     )
 
 
+def _infer_people_from_event_text(
+    event: dict[str, Any],
+    *,
+    name_index: Any | None,
+    people_resolver: Any | None,
+) -> list[str]:
+    """Infer likely attendee names from event summary/description when attendees are sparse."""
+    text_parts = [
+        str(event.get("summary", "") or "").strip(),
+        str(event.get("description", "") or "").strip(),
+    ]
+    haystack = "\n".join(part for part in text_parts if part)
+    if not haystack:
+        return []
+
+    candidates = _person_name_candidates(name_index)
+    if people_resolver:
+        settings = get_settings()
+        candidates.extend(settings.names.known_contacts)
+        candidates.extend(settings.names.aliases.keys())
+        candidates.extend(settings.names.aliases.values())
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for candidate in sorted(candidates, key=len, reverse=True):
+        name = str(candidate).strip()
+        if len(name) < 2:
+            continue
+        if name in haystack:
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                found.append(name)
+
+    # Fallback for titles like "AX market : 조용민, 최동인"
+    if not found:
+        explicit_list = re.split(r"[:：]\s*", haystack, maxsplit=1)
+        if len(explicit_list) == 2:
+            tail = explicit_list[1].splitlines()[0]
+            for token in re.split(r"[,/·&]| 및 | and ", tail):
+                cleaned = token.strip(" ()[]")
+                if re.fullmatch(r"[가-힣]{2,4}", cleaned):
+                    found.append(cleaned)
+
+    return found[:5]
+
+
+def _person_name_candidates(name_index: Any | None) -> list[str]:
+    """Collect display-name candidates from the people index."""
+    if not name_index:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    by_stem = getattr(name_index, "_by_stem", {})
+    for stem, entity in by_stem.items():
+        category = str(getattr(entity, "category", "") or "")
+        if "People" not in category:
+            continue
+        display = stem.split("_", 1)[0].strip()
+        if not display:
+            continue
+        key = display.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(display)
+    return candidates
+
+
 async def _collect_evidence(
     event: dict[str, Any],
     attendees: list[PersonContext],
@@ -395,7 +506,7 @@ def _merge_search_results(
         note.score += score
 
 
-def _build_llm_prompt(context: MeetingContextPacket) -> str:
+def _build_llm_prompt(context: MeetingContextPacket, personal_context_suffix: str = "") -> str:
     attendee_lines = []
     for idx, attendee in enumerate(context.attendees, start=1):
         parts = [attendee.display_name]
@@ -445,6 +556,7 @@ def _build_llm_prompt(context: MeetingContextPacket) -> str:
         f"{chr(10).join(attendee_lines) if attendee_lines else '(없음)'}\n\n"
         "근거 자료:\n"
         f"{chr(10).join(evidence_blocks) if evidence_blocks else '(없음)'}\n"
+        + personal_context_suffix
     )
 
 
@@ -484,6 +596,7 @@ def _fallback_brief(context: MeetingContextPacket) -> ReconstructedMeetingBrief:
     timeline = []
     for note in context.evidence_notes[:3]:
         clue = note.excerpt.splitlines()[0].strip() if note.excerpt else note.title
+        clue = _clean_brief_text(clue)
         if clue:
             timeline.append(f"{note.title}: {clue[:120]}")
 
@@ -611,6 +724,16 @@ def _extract_note_summary(path: Path, *, max_chars: int) -> str:
     summary = "\n".join(lines)
     summary = summary[:max_chars].strip()
     return summary
+
+
+def _clean_brief_text(text: str) -> str:
+    """Strip Obsidian/Markdown artifacts for Telegram-safe fallback text."""
+    cleaned = re.sub(r"\[\[([^|\]#]+)(?:[|#][^\]]+)?\]\]", r"\1", text)
+    cleaned = cleaned.replace("_", " ")
+    cleaned = re.sub(r"[*_`]+", "", cleaned)
+    cleaned = re.sub(r"^>\s*", "", cleaned)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
 
 
 def _trim_blank_edges(lines: list[str]) -> list[str]:

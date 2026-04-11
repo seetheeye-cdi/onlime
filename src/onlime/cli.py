@@ -71,12 +71,14 @@ def run() -> None:
 
 
 async def _run() -> None:
+    import structlog
     from onlime.engine import Engine
     from onlime.maintenance import ClaudeSessionSync, EventRetryTask, GCalSyncTask, GraphIndexTask, KakaoSync, SchedulerTask, TelegramGroupDigestTask, VaultIndexTask, VaultJanitor
     from onlime.maintenance.meeting_brief import MeetingBriefTask
     from onlime.search.fts import VaultSearch
     from onlime.state.store import StateStore
 
+    logger = structlog.get_logger()
     settings = get_settings()
     store = StateStore(settings.state.db_path)
     await store.open()
@@ -106,7 +108,58 @@ async def _run() -> None:
     vault_graph = VaultGraph(store.db, engine._name_index)
     await vault_graph.ensure_schema()
 
+    # === Phase 3: Personal context + CRM + Action lifecycle + Synthesis ===
+
+    # PersonalContextStore — always instantiate (feature flag gates injection at call sites)
+    from onlime.personal_context.store import PersonalContextStore
+    pc_path = Path.home() / ".onlime" / "personal_context.yaml"
+    personal_context_store = PersonalContextStore(pc_path)
+    try:
+        personal_context_store.load()
+    except FileNotFoundError:
+        logger.info("personal_context.no_file", path=str(pc_path))
+
+    # PeopleCRM — gated on feature_flags.people_crm
+    people_crm = None
+    if settings.feature_flags.people_crm:
+        from onlime.processors.people_crm import PeopleCRM
+        people_crm = PeopleCRM(store, engine._people_resolver, engine._name_index)
+        engine.set_people_crm(people_crm)
+        logger.info("people_crm.enabled")
+
+    # ActionLifecycle — gated on feature_flags.action_lifecycle
+    action_lifecycle = None
+    if settings.feature_flags.action_lifecycle:
+        from onlime.processors.action_lifecycle import ActionLifecycle
+        action_lifecycle = ActionLifecycle(store, engine._people_resolver)
+        engine.set_action_lifecycle(action_lifecycle)
+        logger.info("action_lifecycle.enabled")
+
+    # Synthesizer — gated on feature_flags.synthesis
+    synthesizer = None
+    if settings.feature_flags.synthesis:
+        from anthropic import AsyncAnthropic
+        from onlime.processors.synthesizer import Synthesizer
+        from onlime.security.secrets import get_secret_or_env
+        _claude_client = AsyncAnthropic(
+            api_key=get_secret_or_env("claude-api-key", "ANTHROPIC_API_KEY")
+        )
+        synthesizer = Synthesizer(
+            store=store,
+            hybrid=hybrid_search,
+            graph=vault_graph,
+            name_index=engine._name_index,
+            vault_root=settings.vault.root.expanduser(),
+            claude_client=_claude_client,
+        )
+        logger.info("synthesizer.enabled")
+
     # === Background tasks — declarative list ===
+
+    # Pre-instantiate ClaudeSessionSync so we can inject personal_context_store
+    _claude_sync_task = ClaudeSessionSync(interval_seconds=900, db=store.db)
+    _claude_sync_task.personal_context_store = personal_context_store
+
     _bg_tasks: list[tuple[str, object, bool]] = [
         # (label, instance, enabled)
         (
@@ -136,7 +189,7 @@ async def _run() -> None:
         ),
         (
             "Claude session sync (every 15 min)",
-            ClaudeSessionSync(interval_seconds=900, db=store.db),
+            _claude_sync_task,
             True,
         ),
         (
@@ -172,6 +225,33 @@ async def _run() -> None:
         _bg_tasks.insert(2, (
             "GDrive rescan (every 30 min)",
             GDriveRescanTask(interval_seconds=1800, queue=engine.queue),
+            True,
+        ))
+
+    # PeopleTimelineIndexerTask — gated on feature_flags.people_crm
+    if settings.feature_flags.people_crm and people_crm is not None:
+        from onlime.maintenance.people_timeline_indexer import PeopleTimelineIndexerTask
+        _bg_tasks.append((
+            "People timeline indexer (every 30 min)",
+            PeopleTimelineIndexerTask(
+                store=store,
+                crm=people_crm,
+                vault_root=settings.vault.root.expanduser(),
+            ),
+            True,
+        ))
+
+    # ActionEscalatorTask — gated on feature_flags.action_lifecycle
+    if settings.feature_flags.action_lifecycle and action_lifecycle is not None:
+        from onlime.maintenance.action_escalator import ActionEscalatorTask
+        _bg_tasks.append((
+            "Action escalator (every 1h)",
+            ActionEscalatorTask(
+                store=store,
+                lifecycle=action_lifecycle,
+                vault_root=settings.vault.root.expanduser(),
+                telegram_sender=None,  # wired after Telegram connector starts
+            ),
             True,
         ))
 
@@ -217,6 +297,13 @@ async def _run() -> None:
                 conn.set_vault_search(hybrid_search)
                 conn.set_vault_graph(vault_graph)
                 conn.set_store(store)
+                conn.set_name_index(engine._name_index)
+                conn.set_people_resolver(engine._people_resolver)
+                # Phase 3: wire new components to Telegram assistant
+                conn.set_personal_context_store(personal_context_store)
+                conn.set_people_crm(people_crm)
+                conn.set_action_lifecycle(action_lifecycle)
+                conn.set_synthesizer(synthesizer)
                 # Inject Telegram app + dependencies into background tasks
                 for t in tasks:
                     if hasattr(t, "set_telegram_app"):
@@ -227,6 +314,18 @@ async def _run() -> None:
                         t.set_vault_search(hybrid_search)
                     if hasattr(t, "set_vault_graph"):
                         t.set_vault_graph(vault_graph)
+                    if hasattr(t, "set_people_resolver"):
+                        t.set_people_resolver(engine._people_resolver)
+                # Wire ActionEscalatorTask telegram_sender now that bot is live
+                _allowed = settings.telegram_bot.allowed_user_ids
+                if _allowed and settings.feature_flags.action_lifecycle:
+                    _tg_chat_id = _allowed[0]
+                    _tg_app = conn._app
+                    async def _tg_send(text: str, *, _app: object = _tg_app, _cid: int = _tg_chat_id) -> None:
+                        await _app.bot.send_message(chat_id=_cid, text=text)  # type: ignore[union-attr]
+                    for t in tasks:
+                        if hasattr(t, "name") and getattr(t, "name", None) == "action_escalator":
+                            t._tg = _tg_send
             click.echo(f"{label} started.")
         except Exception as exc:
             click.echo(f"{label} failed to start: {exc}")
